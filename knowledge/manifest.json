@@ -5,7 +5,7 @@
     {
       "id": "common/implementation-planning",
       "version": "1.0.0",
-      "sha256": "7ba3e7b749628be1b3c2e5b8c9df447ae1972d1176db4dcf93941417ff22ea81"
+      "sha256": "db92a246df7a6c2d6be9255152e475efb3466ad5c2b109f0a77ffa74f9095fa7"
     },
     {
       "id": "common/systematic-debugging",
@@ -15,27 +15,32 @@
     {
       "id": "k3cloud/bos-features-index",
       "version": "1.0.0",
-      "sha256": "eb6dfcf79aa716326172c102775521c6697ef962d9b014367ff72b4c6bcc1ffc"
+      "sha256": "1cae0aa8ca80cfabc25d47b4d08bacc4554a981e50388bfafc0aaf0e92e948c5"
+    },
+    {
+      "id": "k3cloud/dev-standard-index",
+      "version": "1.0.0",
+      "sha256": "0b1c1c024e162d7aa6aee6628a98475a86b155b2b8b9628daeeb74bb3196924b"
     },
     {
       "id": "k3cloud/dll-plugin-index",
       "version": "1.0.0",
-      "sha256": "b62e6c0ab689beef9e2cceeec3ee5136cfb7be6686dc592cfc3d055038fda018"
+      "sha256": "0eecda92b916d79614dac4b9259e7ff8b169f2eb143eefdad856c32e661760c1"
     },
     {
       "id": "k3cloud/metaobject-creation-index",
       "version": "1.0.0",
-      "sha256": "ac7cf0caf143793d54427a2ac6e2947271a8819fb389c1e4f0bf9ac9af680028"
+      "sha256": "a0eec0e8e40bb9d7bcf1579d767be098f5f15bd6ff08e258f83af453eaac0d94"
     },
     {
       "id": "k3cloud/product-features-index",
       "version": "1.0.0",
-      "sha256": "8e67a8d76d0256687291cd220323a7eb20479dc4c34b7f125a638e166f16a810"
+      "sha256": "a5a2eb3486f27b47f7d68756bc8111f29666c27d24840da6a22630b37e88c878"
     },
     {
       "id": "k3cloud/python-plugin-index",
       "version": "1.0.0",
-      "sha256": "e65e41ef78cc5993cd5d3dd84cfc46e8952c656ef215debf512e88dba2ea25fd"
+      "sha256": "3283a95f3567874bdf57b532dd0b5d55510a4d551008e7a71a797fc22b185f18"
     },
     {
       "id": "k3cloud/solution-decision-framework",
@@ -50,12 +55,12 @@
     {
       "id": "k3cloud/webapi-index",
       "version": "1.0.0",
-      "sha256": "71267c04bc2ca651ef51f0c6e70351990ef828ce7c86e25ad9c33a902f727099"
+      "sha256": "bd19ab6996b5523d2ec883a26e88599ddf39a4288abb6925dcfdfe1967a375e8"
     },
     {
       "id": "system/skill-diagnostic",
       "version": "1.0.0",
-      "sha256": "2aa43814800a49a4f1fb742d56ac66d345837a26468467d4a5018cfe8f382ada"
+      "sha256": "a2964ae550a6244197d6ce7dc51437fbe1eac287dfafae97fa5405fbe76098cc"
     }
   ]
 }
