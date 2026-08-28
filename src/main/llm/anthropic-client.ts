@@ -9,6 +9,73 @@ interface AnthropicOpts {
   fetchImpl?: typeof fetch;
 }
 
+interface AnthropicMessage {
+  role: 'user' | 'assistant';
+  content: string | Array<Record<string, unknown>>;
+}
+
+/**
+ * Map the shared Message history to Anthropic Messages API turns.
+ *
+ * Contract gotchas this must uphold:
+ * - Every assistant `toolCalls` entry MUST be replayed as a `tool_use`
+ *   content block. A user turn carrying `tool_result` blocks that
+ *   reference a `tool_use_id` with no matching `tool_use` block is a hard
+ *   400 ("unexpected tool_use_id") — and that user turn is exactly the
+ *   round-2 shape of the agent loop, so dropping tool_use breaks every
+ *   multi-turn tool conversation.
+ * - Parallel tool calls are separate `tool` role messages in our history;
+ *   Anthropic wants them folded into ONE user turn, so consecutive tool
+ *   results are merged here.
+ * - Extended-thinking turns replay `thinking` (with signature) first, then
+ *   text, then tool_use — the order Claude produced them in.
+ * - Plain-text turns keep `content` as a bare string so the wire shape of
+ *   existing conversations is unchanged.
+ */
+export function toAnthropicConversation(messages: ChatRequest['messages']): AnthropicMessage[] {
+  const out: AnthropicMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue; // handled separately in the request body
+    if (m.role === 'tool') {
+      const block = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
+      const prev = out[out.length - 1];
+      const prevIsToolResults =
+        prev?.role === 'user' &&
+        Array.isArray(prev.content) &&
+        prev.content.length > 0 &&
+        prev.content.every((b) => b.type === 'tool_result');
+      if (prevIsToolResults) (prev.content as Array<Record<string, unknown>>).push(block);
+      else out.push({ role: 'user', content: [block] });
+      continue;
+    }
+    if (m.role === 'assistant') {
+      const blocks: Array<Record<string, unknown>> = [];
+      // Claude requires the exact thinking text + signature to be replayed,
+      // otherwise the thinking chain is dropped and multi-turn tool-use with
+      // adaptive thinking (Opus 4.7) / extended thinking (Sonnet 4.6) breaks.
+      if (m.reasoningContent && m.reasoningSignature) {
+        blocks.push({
+          type: 'thinking',
+          thinking: m.reasoningContent,
+          signature: m.reasoningSignature
+        });
+      }
+      if (m.content) blocks.push({ type: 'text', text: m.content });
+      for (const tc of m.toolCalls ?? []) {
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
+      }
+      if (blocks.length === 0 || (blocks.length === 1 && blocks[0].type === 'text')) {
+        out.push({ role: 'assistant', content: m.content });
+      } else {
+        out.push({ role: 'assistant', content: blocks });
+      }
+      continue;
+    }
+    out.push({ role: 'user', content: m.content });
+  }
+  return out;
+}
+
 export function createAnthropicClient(opts: AnthropicOpts): LlmClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
 
@@ -17,33 +84,7 @@ export function createAnthropicClient(opts: AnthropicOpts): LlmClient {
       const { abortSignal: signal, rawCapture } = resolveStreamOpts(optsOrSignal);
       // Split out system messages (Anthropic takes them separately)
       const systemParts = req.messages.filter(m => m.role === 'system').map(m => m.content);
-      const conversation = req.messages.filter(m => m.role !== 'system').map(m => {
-        const role = m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'user' : 'user';
-        if (m.role === 'tool') {
-          return {
-            role,
-            content: [{ type: 'tool_result', tool_use_id: m.toolCallId, content: m.content }]
-          };
-        }
-        // Assistant with extended-thinking: Claude requires the exact
-        // thinking text + signature to be replayed, otherwise the thinking
-        // chain is dropped and multi-turn tool-use with adaptive thinking
-        // (Opus 4.7) / extended thinking (Sonnet 4.6) breaks.
-        if (m.role === 'assistant' && m.reasoningContent && m.reasoningSignature) {
-          return {
-            role,
-            content: [
-              {
-                type: 'thinking',
-                thinking: m.reasoningContent,
-                signature: m.reasoningSignature
-              },
-              { type: 'text', text: m.content }
-            ]
-          };
-        }
-        return { role, content: m.content };
-      });
+      const conversation = toAnthropicConversation(req.messages);
 
       const body = {
         model: req.model ?? opts.defaultModel,

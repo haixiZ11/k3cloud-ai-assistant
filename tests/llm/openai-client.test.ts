@@ -128,6 +128,43 @@ describe('OpenAI-compatible client', () => {
     expect(events.find((e: any) => e.type === 'usage')).toBeUndefined();
   });
 
+  it('replays assistant toolCalls as tool_calls in multi-turn requests (agent loop round 2)', async () => {
+    // 回归锁:多轮工具对话的第二轮请求,assistant 历史必须带回 tool_calls、
+    // tool 消息必须带 tool_call_id,DeepSeek/Qwen/GLM 等 OpenAI 兼容协议才认。
+    let capturedBody: unknown = null;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        pull(c) { c.enqueue(encoder.encode('data: [DONE]\n\n')); c.close(); }
+      });
+      return new Response(stream, { status: 200 });
+    });
+    const client = createOpenAiClient({ baseUrl: 'https://x', defaultModel: 'm', fetchImpl: fetch });
+    const req: ChatRequest = {
+      providerId: 't', apiKey: 'k',
+      messages: [
+        { id: 'u', role: 'user', content: 'hi', createdAt: '' },
+        {
+          id: 'a',
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'get_time', arguments: { tz: 'UTC' } }],
+          createdAt: ''
+        },
+        { id: 't1', role: 'tool', toolCallId: 'c1', content: '12:00', createdAt: '' }
+      ]
+    };
+    for await (const _ of client.stream(req)) { /* drain */ }
+    const body = capturedBody as { messages: Array<Record<string, unknown>> };
+    const assistantMsg = body.messages.find((m) => m.role === 'assistant');
+    expect(assistantMsg?.tool_calls).toEqual([
+      { id: 'c1', type: 'function', function: { name: 'get_time', arguments: '{"tz":"UTC"}' } }
+    ]);
+    const toolMsg = body.messages.find((m) => m.role === 'tool');
+    expect(toolMsg?.tool_call_id).toBe('c1');
+  });
+
   it('falls back to done-without-usage when provider does not honor stream_options.include_usage', async () => {
     // 如果某 OpenAI 兼容 provider 忽略 stream_options,流就只有 finish_reason chunk + [DONE],
     // 没 usage chunk。post-loop fallback 必须仍然发 done 让 agent loop 终止。

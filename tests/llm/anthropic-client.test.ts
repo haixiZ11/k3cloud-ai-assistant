@@ -167,4 +167,107 @@ describe('Anthropic client', () => {
     const assistantMsg = body.messages.find((m) => m.role === 'assistant');
     expect(assistantMsg?.content).toBe('plain reply');
   });
+
+  // ─── Multi-turn tool-use replay (agent loop round 2+) ───
+
+  function mockFetchCaptureBody() {
+    let capturedBody: unknown = null;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        pull(c) { c.enqueue(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n')); c.close(); }
+      });
+      return new Response(stream, { status: 200 });
+    });
+    return { fetch, body: () => capturedBody as { messages: Array<{ role: string; content: unknown }> } };
+  }
+
+  it('replays assistant toolCalls as tool_use blocks — round-2 request must not 400', async () => {
+    // 回归锁:agent loop 第二轮的请求里,assistant 历史必须带 tool_use 块,
+    // 否则 Anthropic 对引用 tool_use_id 的 tool_result 直接 400
+    // ("unexpected tool_use_id"),Claude 的多轮工具调用全断。
+    const { fetch, body } = mockFetchCaptureBody();
+    const client = createAnthropicClient({ baseUrl: 'https://x', defaultModel: 'm', fetchImpl: fetch });
+    for await (const _ of client.stream({
+      providerId: 'claude', apiKey: 'k',
+      messages: [
+        { id: 'u', role: 'user', content: '给销售订单加一个备注字段', createdAt: '' },
+        {
+          id: 'a',
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'toolu_01ABC', name: 'k3cloud_add_fields', arguments: { extId: 'abc', fields: [] } }],
+          createdAt: ''
+        },
+        { id: 't1', role: 'tool', toolCallId: 'toolu_01ABC', content: '{"ok":true}', createdAt: '' }
+      ]
+    })) { /* drain */ }
+    const assistantMsg = body().messages.find((m) => m.role === 'assistant');
+    const blocks = assistantMsg!.content as Array<Record<string, unknown>>;
+    expect(blocks).toEqual([
+      { type: 'tool_use', id: 'toolu_01ABC', name: 'k3cloud_add_fields', input: { extId: 'abc', fields: [] } }
+    ]);
+    const toolResultMsg = body().messages.find((m) => m.role === 'user' && Array.isArray(m.content));
+    expect(toolResultMsg!.content).toEqual([
+      { type: 'tool_result', tool_use_id: 'toolu_01ABC', content: '{"ok":true}' }
+    ]);
+  });
+
+  it('folds consecutive tool results into ONE user turn (parallel tool calls)', async () => {
+    // loop 对 parallelSafe 工具走 Promise.all,历史里是两条连续 tool 消息;
+    // Anthropic 要求它们折叠进同一个 user turn。
+    const { fetch, body } = mockFetchCaptureBody();
+    const client = createAnthropicClient({ baseUrl: 'https://x', defaultModel: 'm', fetchImpl: fetch });
+    for await (const _ of client.stream({
+      providerId: 'claude', apiKey: 'k',
+      messages: [
+        { id: 'u', role: 'user', content: 'go', createdAt: '' },
+        {
+          id: 'a',
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            { id: 'tu_1', name: 'k3cloud_list_fields', arguments: { extId: 'e' } },
+            { id: 'tu_2', name: 'k3cloud_describe_extension', arguments: { extId: 'e' } }
+          ],
+          createdAt: ''
+        },
+        { id: 't1', role: 'tool', toolCallId: 'tu_1', content: 'result-1', createdAt: '' },
+        { id: 't2', role: 'tool', toolCallId: 'tu_2', content: 'result-2', createdAt: '' }
+      ]
+    })) { /* drain */ }
+    expect(body().messages).toHaveLength(3); // user / assistant / ONE folded user turn
+    expect(body().messages[2].role).toBe('user');
+    expect(body().messages[2].content).toEqual([
+      { type: 'tool_result', tool_use_id: 'tu_1', content: 'result-1' },
+      { type: 'tool_result', tool_use_id: 'tu_2', content: 'result-2' }
+    ]);
+  });
+
+  it('replays thinking → text → tool_use in production order on extended-thinking tool turns', async () => {
+    const { fetch, body } = mockFetchCaptureBody();
+    const client = createAnthropicClient({ baseUrl: 'https://x', defaultModel: 'm', fetchImpl: fetch });
+    for await (const _ of client.stream({
+      providerId: 'claude', apiKey: 'k',
+      messages: [
+        { id: 'u', role: 'user', content: 'hi', createdAt: '' },
+        {
+          id: 'a',
+          role: 'assistant',
+          content: '先侦察扩展列表。',
+          reasoningContent: '用户要加字段,先侦察。',
+          reasoningSignature: 'sig-xyz',
+          toolCalls: [{ id: 'tu_1', name: 'k3cloud_list_extensions', arguments: {} }],
+          createdAt: ''
+        },
+        { id: 't1', role: 'tool', toolCallId: 'tu_1', content: '[]', createdAt: '' }
+      ]
+    })) { /* drain */ }
+    const assistantMsg = body().messages.find((m) => m.role === 'assistant');
+    const blocks = assistantMsg!.content as Array<Record<string, unknown>>;
+    // thinking 必须在最前(Anthropic extended-thinking + tool use 的契约)
+    expect(blocks.map((b) => b.type)).toEqual(['thinking', 'text', 'tool_use']);
+    expect(blocks[0]).toEqual({ type: 'thinking', thinking: '用户要加字段,先侦察。', signature: 'sig-xyz' });
+  });
 });
