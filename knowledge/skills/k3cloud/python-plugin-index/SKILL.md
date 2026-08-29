@@ -1,7 +1,7 @@
 ---
 name: python-plugin-index
 title: K/3 Cloud Python 插件开发索引
-description: 写 K/3 Cloud IronPython 2.7 表单插件(BeforeSave 拦截 / 字段联动 / 按钮点击 / DataChanged)或列表插件(AfterBarItemClick / ListRowDoubleClick / FormatCellValue)时加载。本 skill 本身是索引,告诉你有哪些子文件可拉,遇到具体问题按需用 load_skill_file 拉详细的事件签名 / API 表 / 模板 / 异常处理姿势。Agent 准备生成 pyBody 传给 k3cloud_register_python_plugins / k3cloud_register_list_python_plugins 前先加载它。
+description: 写 K/3 Cloud IronPython 2.7 表单插件(BeforeSave 拦截 / 字段联动 / 按钮点击 / DataChanged)或列表插件(AfterBarItemClick / ListRowDoubleClick / FormatCellValue)时加载。本 skill 本身是索引,告诉你有哪些子文件可拉,遇到具体问题按需用 load_skill_file 拉详细的事件签名 / API 表 / 模板 / 异常处理姿势。Agent 准备生成 pyBody 传给 k3cloud_register_python_plugins / k3cloud_register_list_python_plugins 前先加载它。用户说"在 BOS 设计器/协同开发平台注册了 Python 脚本但保存不报错、运行不生效/不弹窗/静默失败"时也必须加载——那是另一条注册路径,代码是函数形式(this.View)而非类形式(self.View),差异见 references/known-pitfalls。
 version: 1.0.0
 category: plugin-dev
 ---
@@ -76,6 +76,38 @@ class MyOpServicePlugIn(AbstractOperationServicePlugIn):
 
 **关键**:`class MyPlugIn` 的类名**不影响注册**——注册在 `FKERNELXML` 的 `<ClassName>` 元素里,是 OpenDeploy 工具的 `className` 参数。脚本里的类名只供可读。挂错位置(列表事件写到表单插件 / 表单事件写到列表插件)**不触发**:确保事件名在所选基类的 events-reference 段落里出现。
 
+> ⚠️ **以上类形式只适用于 OpenDeploy 工具注册路径。**
+> 用户若在 **BOS 设计器 / 协同开发平台里右键"注册Python脚本"**,那是另一条路:
+> 代码必须是**函数形式** —— `def AfterBindData(e):` 配 `this.View`,**不写 class、不用 self**。
+> 写成 `class X(AbstractBillPlugIn)` 时保存不报错,但类从不被实例化,**代码永不执行**(连 `raise Exception` 都没反应)。
+> 生成 pyBody 前先问清用户走哪条路;已踩坑的完整对照见 `references/known-pitfalls` §0-§2。
+
+### 默认写法:函数形式 + `AfterBindData`(项目约定)
+
+**除非用户明确说"用 OpenDeploy 工具注册",一律按下面的形式给代码**——本项目使用者在真实环境里
+走的是 BOS 设计器手工注册路径,类形式的代码给出去就是不生效的。
+
+```python
+import clr
+clr.AddReference('System')
+clr.AddReference('Kingdee.BOS')
+clr.AddReference('Kingdee.BOS.Core')
+
+from System import *
+from Kingdee.BOS.Core import *
+
+def AfterBindData(e):
+    # 逻辑写这里,用 this.View / this.Model / this.Context
+    pass
+```
+
+三条配套约定:
+1. **事件默认 `AfterBindData`** —— `OnLoad` 时控件未完成绑定,`ShowMessage` / 控件属性设置可能被吞;
+   只有确实需要在数据绑定前介入(如改元数据)才用更早的事件。
+2. **判断新增用 `this.View.OpenParameter.Status`** —— `0=新增 / 1=查看 / 2=修改`,
+   不要用 `Model.OperationStatus`(Flags 枚举,`==` 比较会漏)。
+3. **不要 import `OperationStatus`** —— IronPython 下该 import 路径取不到(实测 `Cannot import name`)。
+
 ## 子文件导航(按需 load_skill_file)
 
 按你当前要解决的子主题拉对应文件,**不要一次性全拉**——每份 200-400 行,全拉会挤满上下文。
@@ -94,6 +126,7 @@ class MyOpServicePlugIn(AbstractOperationServicePlugIn):
 | 要 override 事件,但不知道事件全谱和签名 | `references/events-reference` |
 | 写 `self.Model.GetValue(...)` 忘了基础资料字段怎么取 / `self.View` / `self.Context` API 的形状 | `references/model-api` |
 | 拿到一个典型场景(保存前校验 / 字段联动 / 按钮触发),想照着模板改 | `references/templates` |
+| 手工在 BOS 设计器注册的插件不生效 / 不弹窗 / 静默失败(连 raise 都没反应) | `references/known-pitfalls` |
 
 ## 使用原则
 
