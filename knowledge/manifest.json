@@ -58,6 +58,11 @@
       "sha256": "bd19ab6996b5523d2ec883a26e88599ddf39a4288abb6925dcfdfe1967a375e8"
     },
     {
+      "id": "system/llm-provider-layer",
+      "version": "1.0.0",
+      "sha256": "4a737af0615c045fa44942af36a125bfde6b29669808b975289145bfe857f957"
+    },
+    {
       "id": "system/skill-diagnostic",
       "version": "1.0.0",
       "sha256": "a2964ae550a6244197d6ce7dc51437fbe1eac287dfafae97fa5405fbe76098cc"
