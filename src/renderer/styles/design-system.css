@@ -109,8 +109,21 @@ input, textarea, select { font: inherit; color: inherit; }
 .app.mode-skills .side { display: none; }
 .app.mode-wizard {
   grid-template-columns: 0 0 1fr;
-  grid-template-rows: 0 1fr 0;
+  grid-template-rows: 40px 1fr 0;
 }
+
+/* Wizard drag bar — the wizard hides the in-app TitleBar, and a frameless
+   window has no native bar either, so without this row the user could not
+   move the window at all. The captions opt out (no-drag) so they stay
+   clickable, and the 40px height matches the app TitleBar's row. */
+.wiz-dragbar {
+  grid-area: titlebar;
+  display: flex; align-items: center; justify-content: flex-end;
+  -webkit-app-region: drag;
+}
+/* Same carve-out pattern as the app TitleBar: captions opt out of drag. */
+.wiz-dragbar button,
+.wiz-dragbar .wincaps { -webkit-app-region: no-drag; }
 
 /* Title bar */
 .titlebar {
@@ -179,12 +192,6 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 
 .tb-spacer { flex: 1; }
-
-/* Floating window captions for chromeless surfaces (first-run wizard). */
-.wincontrols-float {
-  position: fixed; top: 0; right: 0;
-  z-index: 100;
-}
 
 .tb-actions { display: flex; gap: 3px; }
 .tb-btn {

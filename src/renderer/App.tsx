@@ -211,10 +211,11 @@ export function App() {
       <ThemeProvider>
         <div className={appClass}>
           {!isWizard && <TitleBar />}
-          {/* Wizard hides the titlebar entirely, but the frameless window still
-              needs min/max/close somewhere — pin the captions top-right. */}
+          {/* Wizard hides the TitleBar, but the frameless window still needs
+              a drag surface and min/max/close captions — the dragbar fills
+              the (otherwise empty) titlebar grid row. */}
           {isWizard && (
-            <div className="wincontrols-float">
+            <div className="wiz-dragbar">
               <WindowControls />
             </div>
           )}
