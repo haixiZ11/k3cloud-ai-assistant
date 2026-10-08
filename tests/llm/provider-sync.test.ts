@@ -3,20 +3,19 @@ import { PROVIDER_CONFIGS } from '../../src/main/llm/types';
 import { PROVIDERS } from '../../src/renderer/data/providers';
 
 /**
- * Token Plan UI metadata lives in two places by design:
- *   - `PROVIDER_CONFIGS[id].tokenPlan.{baseUrl, keyPrefix, docsUrl}` — main side,
- *     used by `createLlmClient` to swap base URL when accessMode='plan'.
- *   - `PROVIDERS.find(id).tokenPlan.{keyPrefix, docsUrl}` — renderer side,
- *     used by Wizard + SettingsPage to gate the access-mode toggle and
- *     surface a help link.
+ * Provider metadata lives in two places by design:
+ *   - `PROVIDER_CONFIGS[id].{baseUrl, tokenPlan.{baseUrl, keyPrefix, docsUrl}}` —
+ *     main side, used by `resolveProviderEndpoint` to route requests.
+ *   - `PROVIDERS.find(id).{baseUrl, tokenPlan.{baseUrl, keyPrefix, docsUrl}}` —
+ *     renderer side, used by Settings/Wizard for the access-mode toggle, the
+ *     help link, and the always-visible "API 地址" field placeholder.
  *
- * baseUrl stays main-only (renderer never calls upstream directly). But
- * `keyPrefix` / `docsUrl` MUST agree across both files — otherwise the
- * Wizard's "view plan" link would 404 or the soft-format hint would
- * suggest the wrong prefix. This护栏 fails when someone updates one side
+ * The renderer never calls upstream directly, but everything it DISPLAYS must
+ * agree with what main actually routes to — otherwise the placeholder shows a
+ * URL the request never hits. This 护栏 fails when someone updates one side
  * and forgets the other.
  */
-describe('provider tokenPlan metadata sync (main ↔ renderer)', () => {
+describe('provider metadata sync (main ↔ renderer)', () => {
   it('every renderer-side tokenPlan has a matching main-side tokenPlan', () => {
     for (const p of PROVIDERS) {
       if (!p.tokenPlan) continue;
@@ -24,6 +23,7 @@ describe('provider tokenPlan metadata sync (main ↔ renderer)', () => {
       expect(main, `PROVIDER_CONFIGS.${p.id}.tokenPlan missing`).toBeDefined();
       expect(main!.keyPrefix).toBe(p.tokenPlan.keyPrefix);
       expect(main!.docsUrl).toBe(p.tokenPlan.docsUrl);
+      expect(main!.baseUrl).toBe(p.tokenPlan.baseUrl);
     }
   });
 
@@ -35,6 +35,22 @@ describe('provider tokenPlan metadata sync (main ↔ renderer)', () => {
       expect(renderer, `PROVIDERS[${id}].tokenPlan missing`).toBeDefined();
       expect(renderer!.keyPrefix).toBe(main.keyPrefix);
       expect(renderer!.docsUrl).toBe(main.docsUrl);
+      expect(renderer!.baseUrl).toBe(main.baseUrl);
+    }
+  });
+
+  it('payg baseUrl agrees across both sides (custom-openai exempt — 用户自填)', () => {
+    for (const p of PROVIDERS) {
+      if (p.id === 'custom-openai') continue;
+      const main = PROVIDER_CONFIGS[p.id];
+      expect(main, `PROVIDER_CONFIGS.${p.id} missing`).toBeDefined();
+      expect(main!.baseUrl).toBe(p.baseUrl);
+    }
+    for (const id of Object.keys(PROVIDER_CONFIGS)) {
+      if (id === 'custom-openai') continue;
+      const renderer = PROVIDERS.find((p) => p.id === id);
+      expect(renderer, `PROVIDERS[${id}] missing`).toBeDefined();
+      expect(renderer!.baseUrl).toBe(PROVIDER_CONFIGS[id].baseUrl);
     }
   });
 });

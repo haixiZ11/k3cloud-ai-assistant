@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@renderer/i18n';
 import { useSettingsStore } from '@renderer/stores/settings-store';
 import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel, type LlmProvider, type LlmModel } from '@renderer/data/providers';
-import type { Language, Theme } from '@shared/types';
+import { KeyInput } from '@renderer/components/KeyInput';
+import type { Language, Theme, TestConnectionResult } from '@shared/types';
 
 const LANGUAGES: { value: Language; labelKey: string }[] = [
   { value: 'zh-CN', labelKey: 'zh-CN' },
@@ -179,9 +180,6 @@ function LlmSection() {
   const [baseUrlInput, setBaseUrlInput] = useState<string>(
     settings.apiBaseUrlOverride?.[initialProviderId] ?? ''
   );
-  const [advancedOpen, setAdvancedOpen] = useState(
-    !!settings.apiBaseUrlOverride?.[initialProviderId]
-  );
   const activeMode: 'payg' | 'plan' =
     settings.apiAccessMode?.[selectedProviderId] ?? 'payg';
   const [saved, setSaved] = useState(false);
@@ -189,22 +187,101 @@ function LlmSection() {
   const [selectedModelId, setSelectedModelId] = useState<string>(
     () => resolveActiveModel(selectedProviderId, settings.modelByProvider)?.id ?? ''
   );
-  const selectedModel: LlmModel | undefined =
-    provider?.models.find((m) => m.id === selectedModelId);
+  const activeModelMeta: LlmModel | null = resolveActiveModel(
+    selectedProviderId,
+    settings.modelByProvider
+  );
 
   const [ollamaInput, setOllamaInput] = useState<string>(
     () => settings.ollamaModelInput ?? PROVIDER_BY_ID['ollama']?.modelInputDefault ?? ''
   );
 
+  // ─── 自定义模型名 — stored id 不在内置目录时回显在这里 ───
+  const [customModelInput, setCustomModelInput] = useState<string>(() => {
+    const stored = settings.modelByProvider?.[initialProviderId];
+    const inCatalog = PROVIDER_BY_ID[initialProviderId]?.models.some((m) => m.id === stored);
+    return stored && !inCatalog ? stored : '';
+  });
+
+  // ─── 连通性测试 ───
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
+
   // Re-resolve when provider changes (selectedProviderId mutates as user clicks cards)
   useEffect(() => {
     const m = resolveActiveModel(selectedProviderId, settings.modelByProvider);
     setSelectedModelId(m?.id ?? '');
+    const stored = settings.modelByProvider?.[selectedProviderId];
+    const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
+    setCustomModelInput(stored && !inCatalog ? stored : '');
+    setTestResult(null);
   }, [selectedProviderId, settings.modelByProvider]);
+
+  // ─── 模型目录自动获取 ───
+  const setFetchedModels = useSettingsStore((s) => s.setFetchedModels);
+  const fetchingRef = useRef<Set<string>>(new Set());
+  const fetchCatalog = useCallback(async (providerId: string, mode: 'payg' | 'plan'): Promise<void> => {
+    if (fetchingRef.current.has(providerId)) return;
+    const target = PROVIDER_BY_ID[providerId];
+    if (!target) return;
+    const key =
+      mode === 'plan'
+        ? settings.planApiKeys?.[providerId]
+        : settings.apiKeys?.[providerId];
+    if (providerId !== 'ollama' && !key) return;
+    const baseUrlOverride =
+      providerId === 'custom-openai'
+        ? settings.customOpenAI?.baseUrl
+        : settings.apiBaseUrlOverride?.[providerId];
+    if (providerId === 'custom-openai' && !baseUrlOverride) return;
+    fetchingRef.current.add(providerId);
+    try {
+      const res = await window.opendeploy.llmListModels({
+        providerId,
+        apiKey: key,
+        accessMode: mode,
+        ...(baseUrlOverride ? { baseUrlOverride } : {})
+      });
+      if (res.ok && res.models && res.models.length > 0) {
+        await setFetchedModels(providerId, res.models);
+      }
+    } catch {
+      // 静默 — 拉不到就用内置目录,不打扰用户
+    } finally {
+      fetchingRef.current.delete(providerId);
+    }
+  }, [settings.apiKeys, settings.planApiKeys, settings.customOpenAI, settings.apiBaseUrlOverride, setFetchedModels]);
+
+  // 选中供应商 / 切计费模式 / key 变化时自动拉一次;有缓存也后台刷新。
+  useEffect(() => {
+    void fetchCatalog(selectedProviderId, activeMode);
+  }, [selectedProviderId, activeMode, fetchCatalog]);
+
+  // 下拉选项 = 内置目录 + 已拉取 id (去重);纯拉取的条目 label 就是模型 id。
+  const fetchedIds = settings.fetchedModelsByProvider?.[selectedProviderId]?.ids ?? [];
+  const mergedModels: LlmModel[] = [
+    ...(provider?.models ?? []),
+    ...fetchedIds
+      .filter((id) => !(provider?.models ?? []).some((m) => m.id === id))
+      .map((id) => ({ id, label: id, contextWindow: 128_000, maxOutput: 8_192, pricing: '—', hint: '' }))
+  ];
+  // stored 自定义模型不在 mergedModels 时,select 显示 recommended (实际请求仍用 stored)。
+  const selectValue = mergedModels.some((m) => m.id === selectedModelId)
+    ? selectedModelId
+    : (provider?.models.find((m) => m.recommended) ?? provider?.models[0])?.id ?? '';
 
   const handleModelChange = async (id: string): Promise<void> => {
     setSelectedModelId(id);
+    setCustomModelInput('');
+    setSaved(false);
     await setModel(selectedProviderId, id);
+  };
+  const handleCustomModelBlur = async (): Promise<void> => {
+    const trimmed = customModelInput.trim();
+    if (!trimmed) return; // 清空 = 放弃自定义,保持当前选择
+    if (trimmed === settings.modelByProvider?.[selectedProviderId]) return;
+    setSelectedModelId(trimmed);
+    await setModel(selectedProviderId, trimmed);
   };
   const handleOllamaInputBlur = async (): Promise<void> => {
     const trimmed = ollamaInput.trim();
@@ -218,12 +295,46 @@ function LlmSection() {
     await setOllamaModelInput(fallback);
   };
 
+  const effectiveModelId = (): string => {
+    if (isOllama) return ollamaInput.trim() || PROVIDER_BY_ID['ollama']?.modelInputDefault || '';
+    return customModelInput.trim() || selectedModelId || '';
+  };
+
+  const runTestConnection = async (): Promise<void> => {
+    const model = effectiveModelId();
+    if (!model) {
+      setTestResult({ ok: false, latencyMs: 0, baseUrl: '', error: t('settings.testNoModel') });
+      return;
+    }
+    setTestResult(null);
+    setTesting(true);
+    try {
+      const key =
+        activeMode === 'plan'
+          ? settings.planApiKeys?.[selectedProviderId]
+          : settings.apiKeys?.[selectedProviderId];
+      const baseUrlOverride =
+        selectedProviderId === 'custom-openai'
+          ? settings.customOpenAI?.baseUrl
+          : settings.apiBaseUrlOverride?.[selectedProviderId];
+      const res = await window.opendeploy.llmTestConnection({
+        providerId: selectedProviderId,
+        apiKey: key,
+        model,
+        accessMode: activeMode,
+        ...(baseUrlOverride ? { baseUrlOverride } : {})
+      });
+      setTestResult(res);
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const handleProviderSelect = async (provider: LlmProvider): Promise<void> => {
     setSelectedProviderId(provider.id);
     setApiKeyInput(settings.apiKeys?.[provider.id] ?? '');
     setPlanKeyInput(settings.planApiKeys?.[provider.id] ?? '');
     setBaseUrlInput(settings.apiBaseUrlOverride?.[provider.id] ?? '');
-    setAdvancedOpen(!!settings.apiBaseUrlOverride?.[provider.id]);
     setSaved(false);
     await setLlmProvider(provider.id);
   };
@@ -232,12 +343,14 @@ function LlmSection() {
     await setApiKey(selectedProviderId, apiKeyInput);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 2000);
+    void runTestConnection();
   };
 
   const handleSavePlan = async (): Promise<void> => {
     await setPlanApiKey(selectedProviderId, planKeyInput);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 2000);
+    void runTestConnection();
   };
 
   const handleModeChange = async (mode: 'payg' | 'plan'): Promise<void> => {
@@ -256,6 +369,15 @@ function LlmSection() {
   };
 
   const isOllama = selectedProviderId === 'ollama';
+
+  // URL 字段的默认值随计费模式切换(豆包/千问/Kimi/MiMo 的包月端点不同)。
+  const defaultBaseUrl = (): string => {
+    if (!provider) return '';
+    if (activeMode === 'plan' && provider.tokenPlan?.baseUrl) return provider.tokenPlan.baseUrl;
+    return provider.baseUrl || '';
+  };
+  const effectiveBaseUrl = (): string =>
+    settings.apiBaseUrlOverride?.[selectedProviderId] || defaultBaseUrl() || '—';
 
   return (
     <>
@@ -327,23 +449,34 @@ function LlmSection() {
             </div>
             <div className="ctl" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <select
-                value={selectedModelId}
+                value={selectValue}
                 onChange={(e) => { void handleModelChange(e.target.value); }}
                 style={{ minWidth: 280, padding: '6px 8px' }}
               >
-                {provider.models.map((m) => (
+                {mergedModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.label}{m.recommended ? ` (${t('settings.recommendedShort')})` : ''} — {m.hint}
+                    {m.label}{m.recommended ? ` (${t('settings.recommendedShort')})` : ''}{m.hint ? ` — ${m.hint}` : ''}
                   </option>
                 ))}
               </select>
-              {selectedModel && (
+              {activeModelMeta && (
                 <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                  {t('settings.contextLabel')}: {(selectedModel.contextWindow / 1000).toFixed(0)}K ·{' '}
-                  {t('settings.maxOutputLabel')}: {(selectedModel.maxOutput / 1000).toFixed(1)}K ·{' '}
-                  {t('settings.priceLabel')}: {selectedModel.pricing}
+                  {t('settings.contextLabel')}: {(activeModelMeta.contextWindow / 1000).toFixed(0)}K ·{' '}
+                  {t('settings.maxOutputLabel')}: {(activeModelMeta.maxOutput / 1000).toFixed(1)}K ·{' '}
+                  {t('settings.priceLabel')}: {activeModelMeta.pricing}
                 </div>
               )}
+              <div>
+                <div className="muted small" style={{ marginBottom: 4 }}>{t('settings.customModelHint')}</div>
+                <input
+                  type="text"
+                  value={customModelInput}
+                  onChange={(e) => { setCustomModelInput(e.target.value); setSaved(false); }}
+                  onBlur={() => { void handleCustomModelBlur(); }}
+                  placeholder={t('settings.customModelLabel')}
+                  style={{ minWidth: 280, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                />
+              </div>
             </div>
           </div>
         </section>
@@ -363,7 +496,13 @@ function LlmSection() {
                 onBlur={() => { void handleOllamaInputBlur(); }}
                 placeholder={t('settings.modelOllamaPlaceholder')}
                 style={{ minWidth: 280 }}
+                list="ollama-model-list"
               />
+              <datalist id="ollama-model-list">
+                {(settings.fetchedModelsByProvider?.['ollama']?.ids ?? []).map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
             </div>
           </div>
         </section>
@@ -438,20 +577,17 @@ function LlmSection() {
                   )}
                 </div>
               </div>
-              <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="password"
+              <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 340 }}>
+                <KeyInput
                   value={apiKeyInput}
-                  onChange={(e) => {
-                    setApiKeyInput(e.target.value);
-                    setSaved(false);
-                  }}
+                  onChange={(v) => { setApiKeyInput(v); setSaved(false); }}
                   placeholder={
                     provider?.tokenPlan
                       ? t('settings.paygApiKeyPlaceholder')
                       : t('settings.apiKeyPlaceholder')
                   }
-                  style={{ minWidth: 260 }}
+                  inputStyle={{ minWidth: 0, flex: 1 }}
+                  containerStyle={{ flex: 1 }}
                 />
                 <button
                   type="button"
@@ -488,16 +624,13 @@ function LlmSection() {
                       </div>
                     )}
                 </div>
-                <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <input
-                    type="password"
+                <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 340 }}>
+                  <KeyInput
                     value={planKeyInput}
-                    onChange={(e) => {
-                      setPlanKeyInput(e.target.value);
-                      setSaved(false);
-                    }}
+                    onChange={(v) => { setPlanKeyInput(v); setSaved(false); }}
                     placeholder={t('settings.planApiKeyPlaceholder')}
-                    style={{ minWidth: 260 }}
+                    inputStyle={{ minWidth: 0, flex: 1 }}
+                    containerStyle={{ flex: 1 }}
                   />
                   <button
                     type="button"
@@ -518,58 +651,86 @@ function LlmSection() {
               </div>
             )}
 
-            {/* Advanced — base URL override.
-                Folded by default; auto-expands if a value is already set so
-                returning users see their override immediately. */}
-            <div style={{ marginTop: 16 }}>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setAdvancedOpen((v) => !v)}
-                style={{ fontSize: 12 }}
-              >
-                {advancedOpen ? '▾' : '▸'} {t('settings.advanced.header')}
-              </button>
-              {advancedOpen && (
-                <div className="setting-row" style={{ borderBottom: 'none', alignItems: 'flex-start', marginTop: 8 }}>
-                  <div>
-                    <div className="lbl">{t('settings.advanced.baseUrlLabel')}</div>
-                    <div className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>
-                      {t('settings.advanced.baseUrlHint')}
-                    </div>
+            {/* Connectivity probe — tiny real request through the same
+                endpoint resolution the chat path uses. Auto-runs after a
+                key save; the button re-runs it any time. */}
+            <div className="setting-row" style={{ borderBottom: 'none', alignItems: 'flex-start' }}>
+              <div>
+                <div className="lbl">{t('settings.testConnection')}</div>
+                {testResult && (
+                  <div
+                    className="small"
+                    style={{
+                      marginTop: 4,
+                      lineHeight: 1.5,
+                      color: testResult.ok ? 'var(--ok, #2e7d32)' : 'var(--danger, #c62828)',
+                      wordBreak: 'break-all'
+                    }}
+                  >
+                    {testResult.ok
+                      ? t('settings.testOk', { ms: testResult.latencyMs })
+                      : `${t('settings.testFailed')}：${testResult.error ?? ''}`}
+                    {testResult.baseUrl ? ` · ${testResult.baseUrl}` : ''}
                   </div>
-                  <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <input
-                      type="text"
-                      value={baseUrlInput}
-                      onChange={(e) => {
-                        setBaseUrlInput(e.target.value);
-                        setSaved(false);
-                      }}
-                      placeholder={t('settings.advanced.baseUrlPlaceholder')}
-                      style={{ minWidth: 320, fontFamily: 'var(--font-mono)', fontSize: 12 }}
-                    />
-                    <button
-                      type="button"
-                      className="btn primary"
-                      onClick={() => {
-                        void handleSaveBaseUrl();
-                      }}
-                    >
-                      {t('settings.save')}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => {
-                        void handleResetBaseUrl();
-                      }}
-                    >
-                      {t('settings.advanced.resetDefault')}
-                    </button>
-                  </div>
+                )}
+              </div>
+              <div className="ctl">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={testing}
+                  onClick={() => {
+                    void runTestConnection();
+                  }}
+                >
+                  {testing ? t('settings.testing') : t('settings.testConnection')}
+                </button>
+              </div>
+            </div>
+
+            {/* API base URL — always visible, editable. Empty = keep the
+                default (placeholder shows it); filled = hit this URL directly
+                (apiBaseUrlOverride, highest priority in main's routing). */}
+            <div className="setting-row" style={{ borderBottom: 'none', alignItems: 'flex-start' }}>
+              <div>
+                <div className="lbl">{t('settings.baseUrlLabel')}</div>
+                <div className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>
+                  {t('settings.baseUrlHint')}
                 </div>
-              )}
+                <div className="muted small mono" style={{ marginTop: 4, wordBreak: 'break-all' }}>
+                  {t('settings.baseUrlEffective', { url: effectiveBaseUrl() })}
+                </div>
+              </div>
+              <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={baseUrlInput}
+                  onChange={(e) => {
+                    setBaseUrlInput(e.target.value);
+                    setSaved(false);
+                  }}
+                  placeholder={defaultBaseUrl()}
+                  style={{ minWidth: 320, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                />
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => {
+                    void handleSaveBaseUrl();
+                  }}
+                >
+                  {t('settings.save')}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    void handleResetBaseUrl();
+                  }}
+                >
+                  {t('settings.resetDefault')}
+                </button>
+              </div>
             </div>
           </>
         )}

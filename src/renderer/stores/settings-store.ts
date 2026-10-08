@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AppSettings, Language, Theme } from '@shared/types';
+import type { AppSettings, CustomOpenAISettings, Language, Theme } from '@shared/types';
 import { DEFAULT_SETTINGS } from '@shared/types';
 
 interface SettingsState {
@@ -16,6 +16,11 @@ interface SettingsState {
   setModel: (provider: string, modelId: string) => Promise<void>;
   setOllamaModelInput: (value: string) => Promise<void>;
   setLlmRawDump: (on: boolean) => Promise<void>;
+  setCustomOpenAI: (patch: Partial<CustomOpenAISettings>) => Promise<void>;
+  /** 标记向导已走过(完成或跳过) — App 的首启检测据此不再拉人进向导。 */
+  completeOnboarding: () => Promise<void>;
+  /** 缓存从 /models|/api/tags 拉到的模型 id,供下拉合并展示。 */
+  setFetchedModels: (providerId: string, ids: string[]) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -47,6 +52,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setApiKey: async (provider, key) => {
     const current = get().settings;
+    if (provider === 'custom-openai') {
+      const next = {
+        ...current,
+        customOpenAI: { ...(current.customOpenAI ?? {}), apiKey: key }
+      };
+      await window.opendeploy.saveSettings(next);
+      set({ settings: next });
+      return;
+    }
     const apiKeys = { ...(current.apiKeys ?? {}), [provider]: key };
     const next = { ...current, apiKeys };
     await window.opendeploy.saveSettings(next);
@@ -85,6 +99,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setModel: async (provider, modelId) => {
     const current = get().settings;
+    if (provider === 'custom-openai') {
+      const next = {
+        ...current,
+        customOpenAI: { ...(current.customOpenAI ?? {}), model: modelId }
+      };
+      await window.opendeploy.saveSettings(next);
+      set({ settings: next });
+      return;
+    }
     const modelByProvider = { ...(current.modelByProvider ?? {}), [provider]: modelId };
     const next = { ...current, modelByProvider };
     await window.opendeploy.saveSettings(next);
@@ -99,6 +122,35 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setLlmRawDump: async (on) => {
     const next = { ...get().settings, llmRawDump: on };
+    await window.opendeploy.saveSettings(next);
+    set({ settings: next });
+  },
+
+  setCustomOpenAI: async (patch) => {
+    const current = get().settings;
+    const next = {
+      ...current,
+      customOpenAI: { ...(current.customOpenAI ?? {}), ...patch }
+    };
+    await window.opendeploy.saveSettings(next);
+    set({ settings: next });
+  },
+
+  completeOnboarding: async () => {
+    const next = { ...get().settings, onboardingDone: true };
+    await window.opendeploy.saveSettings(next);
+    set({ settings: next });
+  },
+
+  setFetchedModels: async (providerId, ids) => {
+    const current = get().settings;
+    const next = {
+      ...current,
+      fetchedModelsByProvider: {
+        ...(current.fetchedModelsByProvider ?? {}),
+        [providerId]: { ids, fetchedAt: Date.now() }
+      }
+    };
     await window.opendeploy.saveSettings(next);
     set({ settings: next });
   }

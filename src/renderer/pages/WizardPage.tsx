@@ -1,9 +1,11 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSettingsStore } from '@renderer/stores/settings-store';
-import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel } from '@renderer/data/providers';
+import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel, type LlmModel } from '@renderer/data/providers';
+import { KeyInput } from '@renderer/components/KeyInput';
 import { Icons } from '@renderer/components/icons';
 import { LogoMark } from '@renderer/components/LogoMark';
+import type { TestConnectionResult } from '@shared/types';
 
 interface WizardPageProps {
   /** Called after the user clicks "Finish" on the final step. */
@@ -21,11 +23,17 @@ interface WizardPageProps {
  */
 export function WizardPage({ onFinish }: WizardPageProps) {
   const { t } = useTranslation();
+  const settings = useSettingsStore((s) => s.settings);
   const [step, setStep] = useState(0);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [accessMode, setAccessMode] = useState<'payg' | 'plan'>('payg');
   const [selectedModelId, setSelectedModelId] = useState<string>('');
+  const [customModelId, setCustomModelId] = useState('');
+  const [fetchedIds, setFetchedIds] = useState<string[]>([]);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
+  const lastProbedKey = useRef<string>('');
   const setLlmProvider = useSettingsStore((s) => s.setLlmProvider);
   const setApiKey = useSettingsStore((s) => s.setApiKey);
   const setPlanApiKey = useSettingsStore((s) => s.setPlanApiKey);
@@ -39,20 +47,72 @@ export function WizardPage({ onFinish }: WizardPageProps) {
   useEffect(() => {
     if (!selectedProvider || selectedProvider === 'ollama') {
       setSelectedModelId('');
-      return;
+    } else {
+      const m = resolveActiveModel(selectedProvider, undefined);
+      setSelectedModelId(m?.id ?? '');
     }
-    const m = resolveActiveModel(selectedProvider, undefined);
-    setSelectedModelId(m?.id ?? '');
+    setCustomModelId('');
+    setFetchedIds([]);
+    setTestResult(null);
+    lastProbedKey.current = '';
   }, [selectedProvider]);
 
   // Reset access mode when provider switches — a provider may not advertise
   // a plan endpoint at all, so always start at 'payg' (safe default).
-  // Also clear the key input on switches so a key meant for one mode/provider
-  // doesn't accidentally get saved under another (e.g. tp-xxxx into apiKeys).
+  // Prefill from the saved bucket instead of clearing: the wizard can reappear
+  // after a skip/reconfig, and making the user re-paste a stored key is churn.
   useEffect(() => {
     setAccessMode('payg');
-    setApiKeyInput('');
+    setApiKeyInput(selectedProvider ? settings.apiKeys?.[selectedProvider] ?? '' : '');
   }, [selectedProvider]);
+
+  // key 输入框失焦 → 用刚输入的 key 拉模型目录 + 跑连通性测试(同一 key 只探测一次)。
+  const probeWithKey = (): void => {
+    const key = apiKeyInput.trim();
+    if (!selectedProvider || !key) return;
+    const probeKey = `${selectedProvider}|${accessMode}|${key}`;
+    if (lastProbedKey.current === probeKey) return;
+    lastProbedKey.current = probeKey;
+    void (async () => {
+      const res = await window.opendeploy.llmListModels({
+        providerId: selectedProvider,
+        apiKey: key,
+        accessMode
+      });
+      if (res.ok && res.models && res.models.length > 0) setFetchedIds(res.models);
+    })();
+    void (async () => {
+      const model = customModelId.trim() || selectedModelId;
+      if (!model) return;
+      setTesting(true);
+      try {
+        const res = await window.opendeploy.llmTestConnection({
+          providerId: selectedProvider,
+          apiKey: key,
+          model,
+          accessMode
+        });
+        setTestResult(res);
+      } finally {
+        setTesting(false);
+      }
+    })();
+  };
+
+  const effectiveModelId = (): string =>
+    selectedProvider === 'ollama'
+      ? (PROVIDER_BY_ID['ollama']?.modelInputDefault ?? '')
+      : customModelId.trim() || selectedModelId;
+
+  // 内置目录 + 已拉取 id (去重);纯拉取条目 label 就是模型 id。
+  const wizardModels: LlmModel[] = selectedProviderObj
+    ? [
+        ...selectedProviderObj.models,
+        ...fetchedIds
+          .filter((id) => !selectedProviderObj.models.some((m) => m.id === id))
+          .map((id) => ({ id, label: id, contextWindow: 128_000, maxOutput: 8_192, pricing: '—', hint: '' }))
+      ]
+    : [];
 
   // Stepper only covers the two "real" onboarding steps — Step 0 is a hero.
   const steps = [t('wizard.stepProvider'), t('wizard.stepDone')];
@@ -76,8 +136,15 @@ export function WizardPage({ onFinish }: WizardPageProps) {
         }
         await setApiAccessMode(selectedProvider, accessMode);
       }
-      if (selectedProvider !== 'ollama' && selectedModelId) {
-        await setModel(selectedProvider, selectedModelId);
+      // 自定义模型名优先 — 用户显式输入的 id 直接生效。
+      const modelToSave =
+        selectedProvider !== 'ollama' && customModelId.trim()
+          ? customModelId.trim()
+          : selectedProvider !== 'ollama'
+            ? selectedModelId
+            : '';
+      if (modelToSave) {
+        await setModel(selectedProvider, modelToSave);
       }
     }
     onFinish();
@@ -103,6 +170,14 @@ export function WizardPage({ onFinish }: WizardPageProps) {
               onClick={() => setStep(1)}
             >
               {t('wizard.startCta')} →
+            </button>
+            <button
+              type="button"
+              className="btn"
+              style={{ fontSize: 12, color: 'var(--muted)' }}
+              onClick={onFinish}
+            >
+              {t('wizard.skip')}
             </button>
             <div className="wiz-chips">
               <span className="chip-item">
@@ -208,7 +283,11 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                                   className={`btn${accessMode === 'payg' ? ' primary' : ''}`}
                                   onClick={() => {
                                     setAccessMode('payg');
-                                    setApiKeyInput('');
+                                    setApiKeyInput(
+                                      selectedProvider
+                                        ? settings.apiKeys?.[selectedProvider] ?? ''
+                                        : ''
+                                    );
                                   }}
                                 >
                                   {t('settings.accessMode.payg')}
@@ -218,7 +297,11 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                                   className={`btn${accessMode === 'plan' ? ' primary' : ''}`}
                                   onClick={() => {
                                     setAccessMode('plan');
-                                    setApiKeyInput('');
+                                    setApiKeyInput(
+                                      selectedProvider
+                                        ? settings.planApiKeys?.[selectedProvider] ?? ''
+                                        : ''
+                                    );
                                   }}
                                 >
                                   {t('settings.accessMode.plan')}
@@ -259,27 +342,40 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                               ? t('settings.planApiKey')
                               : t('settings.apiKey')}
                           </label>
-                          <input
-                            type="password"
+                          <KeyInput
                             value={apiKeyInput}
-                            onChange={(e) => setApiKeyInput(e.target.value)}
+                            onChange={setApiKeyInput}
+                            onBlur={probeWithKey}
                             placeholder={
                               accessMode === 'plan'
                                 ? t('settings.planApiKeyPlaceholder')
                                 : t('settings.apiKeyPlaceholder')
                             }
-                            style={{
-                              width: '100%',
-                              padding: '8px 12px',
-                              border: '1px solid var(--border)',
-                              borderRadius: 6,
-                              background: 'var(--surface)',
-                              color: 'var(--ink)',
-                              fontSize: 13,
-                              fontFamily: 'var(--font-mono)'
-                            }}
+                            inputStyle={{ width: '100%', flex: '1 1 auto' }}
+                            containerStyle={{ width: '100%' }}
                           />
-                          {selectedProviderObj && selectedProviderObj.models.length > 0 && (
+                          {(testing || testResult) && (
+                            <div
+                              className="small"
+                              style={{
+                                marginTop: 6,
+                                lineHeight: 1.5,
+                                color: testResult?.ok
+                                  ? 'var(--ok, #2e7d32)'
+                                  : 'var(--danger, #c62828)',
+                                wordBreak: 'break-all'
+                              }}
+                            >
+                              {testing
+                                ? t('settings.testing')
+                                : testResult?.ok
+                                  ? t('settings.testOk', { ms: testResult.latencyMs })
+                                  : testResult
+                                    ? `${t('settings.testFailed')}：${testResult.error ?? ''}`
+                                    : ''}
+                            </div>
+                          )}
+                          {selectedProviderObj && wizardModels.length > 0 && (
                             <div style={{ marginTop: 12 }}>
                               <label
                                 style={{
@@ -292,8 +388,15 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                                 {t('settings.model')}
                               </label>
                               <select
-                                value={selectedModelId}
-                                onChange={(e) => setSelectedModelId(e.target.value)}
+                                value={
+                                  wizardModels.some((m) => m.id === selectedModelId)
+                                    ? selectedModelId
+                                    : (selectedProviderObj.models.find((m) => m.recommended) ?? selectedProviderObj.models[0])?.id ?? ''
+                                }
+                                onChange={(e) => {
+                                  setSelectedModelId(e.target.value);
+                                  setCustomModelId('');
+                                }}
                                 style={{
                                   width: '100%',
                                   padding: '8px 12px',
@@ -304,12 +407,32 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                                   fontSize: 13
                                 }}
                               >
-                                {selectedProviderObj.models.map((m) => (
+                                {wizardModels.map((m) => (
                                   <option key={m.id} value={m.id}>
-                                    {m.label}{m.recommended ? ` (${t('settings.recommendedShort')})` : ''} — {m.hint}
+                                    {m.label}{m.recommended ? ` (${t('settings.recommendedShort')})` : ''}{m.hint ? ` — ${m.hint}` : ''}
                                   </option>
                                 ))}
                               </select>
+                              <div className="hint" style={{ marginTop: 6, fontSize: 12 }}>
+                                {t('settings.customModelHint')}
+                              </div>
+                              <input
+                                type="text"
+                                value={customModelId}
+                                onChange={(e) => setCustomModelId(e.target.value)}
+                                placeholder={t('settings.customModelLabel')}
+                                style={{
+                                  width: '100%',
+                                  marginTop: 6,
+                                  padding: '8px 12px',
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 6,
+                                  background: 'var(--surface)',
+                                  color: 'var(--ink)',
+                                  fontSize: 13,
+                                  fontFamily: 'var(--font-mono)'
+                                }}
+                              />
                             </div>
                           )}
                         </>
@@ -334,9 +457,10 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                       <span className="muted small">LLM</span>
                       <span className="mono small">
                         {selectedProviderLabel}
-                        {selectedProviderObj && selectedModelId && (() => {
+                        {selectedProviderObj && customModelId.trim() && ` · ${customModelId.trim()}`}
+                        {selectedProviderObj && !customModelId.trim() && selectedModelId && (() => {
                           const m = selectedProviderObj.models.find((x) => x.id === selectedModelId);
-                          return m ? ` · ${m.label}` : '';
+                          return ` · ${m ? m.label : selectedModelId}`;
                         })()}
                       </span>
                     </div>
@@ -376,6 +500,16 @@ export function WizardPage({ onFinish }: WizardPageProps) {
               <span className="wiz-progress">
                 {step} / {steps.length}
               </span>
+              {step === 1 && (
+                <button
+                  className="btn"
+                  type="button"
+                  style={{ color: 'var(--muted)', fontSize: 12 }}
+                  onClick={onFinish}
+                >
+                  {t('wizard.skip')}
+                </button>
+              )}
               {step < steps.length ? (
                 <button
                   className="btn primary lg"

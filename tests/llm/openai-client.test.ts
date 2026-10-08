@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createOpenAiClient } from '../../src/main/llm/openai-client';
+import { createOpenAiClient, listOpenAiModels } from '../../src/main/llm/openai-client';
 import type { ChatRequest } from '../../src/shared/llm-types';
 
 // Minimal fetch mock returning streaming SSE
@@ -295,5 +295,67 @@ describe('OpenAI-compatible client', () => {
     )) events.push(e);
     expect(events.some((e) => (e as { type: string }).type === 'error')).toBe(true);
     expect(closed).toBe(true);
+  });
+
+  it('lists models from OpenAI-compatible /models endpoint', async () => {
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('https://example.com/v1/models');
+      expect(init?.headers).toEqual({ Authorization: 'Bearer sk-custom' });
+      return Response.json({
+        data: [
+          { id: 'gpt-4o-mini' },
+          { id: 'deepseek-chat' },
+          { id: 'gpt-4o-mini' }
+        ]
+      });
+    });
+    const models = await listOpenAiModels({
+      baseUrl: 'https://example.com/v1/',
+      apiKey: 'sk-custom',
+      fetchImpl: fetch
+    });
+    expect(models).toEqual(['gpt-4o-mini', 'deepseek-chat']);
+  });
+
+  it('normalizes base URL when user pastes /chat/completions endpoint', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      expect(url).toBe('https://example.com/v1/models');
+      return Response.json({ data: [{ id: 'gpt-4o-mini' }] });
+    });
+    const models = await listOpenAiModels({
+      baseUrl: 'https://example.com/v1/chat/completions',
+      apiKey: 'sk-custom',
+      fetchImpl: fetch
+    });
+    expect(models).toEqual(['gpt-4o-mini']);
+  });
+
+  it('keeps non-v1 versioned roots intact (GLM /v4, doubao /api/v3)', async () => {
+    // 回归锁:旧逻辑对所有非 /v1 结尾的根强拼 /v1,把智谱
+    // /api/paas/v4 打成 /api/paas/v4/v1/... → 404。
+    const urls: string[] = [];
+    const fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      return Response.json({ data: [{ id: 'm' }] });
+    });
+    await listOpenAiModels({ baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'k', fetchImpl: fetch });
+    await listOpenAiModels({ baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: 'k', fetchImpl: fetch });
+    expect(urls).toEqual([
+      'https://open.bigmodel.cn/api/paas/v4/models',
+      'https://ark.cn-beijing.volces.com/api/v3/models'
+    ]);
+  });
+
+  it('appends /v1 by default when user enters provider root URL', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      expect(url).toBe('https://example.com/v1/models');
+      return Response.json({ data: [{ id: 'gpt-4o-mini' }] });
+    });
+    const models = await listOpenAiModels({
+      baseUrl: 'https://example.com',
+      apiKey: 'sk-custom',
+      fetchImpl: fetch
+    });
+    expect(models).toEqual(['gpt-4o-mini']);
   });
 });

@@ -98,3 +98,24 @@ export function createOllamaClient(opts: OllamaOpts): LlmClient {
     }
   };
 }
+
+/**
+ * List locally installed model names from the Ollama daemon (/api/tags).
+ * Names are what `ollama list` shows and what /api/chat accepts as `model`.
+ */
+export async function listOllamaModels(input: {
+  baseUrl: string;
+  fetchImpl?: typeof fetch;
+}): Promise<string[]> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${input.baseUrl}/api/tags`, { method: 'GET' });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
+  const data = await response.json() as { models?: Array<{ name?: string }> };
+  const models = (data.models ?? [])
+    .map((m) => (typeof m.name === 'string' ? m.name.trim() : ''))
+    .filter((id) => id.length > 0);
+  return Array.from(new Set(models));
+}
