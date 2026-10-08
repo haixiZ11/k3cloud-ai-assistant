@@ -138,6 +138,9 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .titlebar button,
 .titlebar .wincaps { -webkit-app-region: no-drag; }
+/* Only the drag-region rules for the caption buttons live here; their visual
+   styling (46x40 hit area, hover / :active / :focus-visible, close red) is
+   in `design-system-v3.css` under the "Windows titlebar" section. */
 .traffic { display: flex; gap: 7px; }
 .traffic span { width: 12px; height: 12px; border-radius: 50%; background: var(--border-strong); }
 .traffic span:nth-child(1){ background: #ec6a5e; }
