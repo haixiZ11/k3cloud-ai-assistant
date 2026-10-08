@@ -172,7 +172,10 @@ function LlmSection() {
   const provider: LlmProvider | undefined = PROVIDER_BY_ID[selectedProviderId];
 
   const [apiKeyInput, setApiKeyInput] = useState<string>(
-    settings.apiKeys?.[initialProviderId] ?? ''
+    () =>
+      initialProviderId === 'custom-openai'
+        ? settings.customOpenAI?.apiKey ?? ''
+        : settings.apiKeys?.[initialProviderId] ?? ''
   );
   const [planKeyInput, setPlanKeyInput] = useState<string>(
     settings.planApiKeys?.[initialProviderId] ?? ''
@@ -196,8 +199,10 @@ function LlmSection() {
     () => settings.ollamaModelInput ?? PROVIDER_BY_ID['ollama']?.modelInputDefault ?? ''
   );
 
-  // ─── 自定义模型名 — stored id 不在内置目录时回显在这里 ───
+  // ─── 自定义模型名 — stored id 不在内置目录时回显在这里;custom-openai 的
+  // 模型名走专属的 customOpenAI.model(chat 请求也从那里读)───
   const [customModelInput, setCustomModelInput] = useState<string>(() => {
+    if (initialProviderId === 'custom-openai') return settings.customOpenAI?.model ?? '';
     const stored = settings.modelByProvider?.[initialProviderId];
     const inCatalog = PROVIDER_BY_ID[initialProviderId]?.models.some((m) => m.id === stored);
     return stored && !inCatalog ? stored : '';
@@ -211,11 +216,15 @@ function LlmSection() {
   useEffect(() => {
     const m = resolveActiveModel(selectedProviderId, settings.modelByProvider);
     setSelectedModelId(m?.id ?? '');
-    const stored = settings.modelByProvider?.[selectedProviderId];
-    const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
-    setCustomModelInput(stored && !inCatalog ? stored : '');
+    if (selectedProviderId === 'custom-openai') {
+      setCustomModelInput(settings.customOpenAI?.model ?? '');
+    } else {
+      const stored = settings.modelByProvider?.[selectedProviderId];
+      const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
+      setCustomModelInput(stored && !inCatalog ? stored : '');
+    }
     setTestResult(null);
-  }, [selectedProviderId, settings.modelByProvider]);
+  }, [selectedProviderId, settings.modelByProvider, settings.customOpenAI]);
 
   // ─── 模型目录自动获取 ───
   const setFetchedModels = useSettingsStore((s) => s.setFetchedModels);
@@ -224,14 +233,18 @@ function LlmSection() {
     if (fetchingRef.current.has(providerId)) return;
     const target = PROVIDER_BY_ID[providerId];
     if (!target) return;
+    // custom-openai 的密钥存专属字段 customOpenAI.apiKey(见 settings-store.setApiKey),
+    // 其余供应商走 apiKeys/planApiKeys。
     const key =
-      mode === 'plan'
-        ? settings.planApiKeys?.[providerId]
-        : settings.apiKeys?.[providerId];
+      providerId === 'custom-openai'
+        ? settings.customOpenAI?.apiKey
+        : mode === 'plan'
+          ? settings.planApiKeys?.[providerId]
+          : settings.apiKeys?.[providerId];
     if (providerId !== 'ollama' && !key) return;
     const baseUrlOverride =
       providerId === 'custom-openai'
-        ? settings.customOpenAI?.baseUrl
+        ? settings.apiBaseUrlOverride?.[providerId] || settings.customOpenAI?.baseUrl
         : settings.apiBaseUrlOverride?.[providerId];
     if (providerId === 'custom-openai' && !baseUrlOverride) return;
     fetchingRef.current.add(providerId);
@@ -279,7 +292,11 @@ function LlmSection() {
   const handleCustomModelBlur = async (): Promise<void> => {
     const trimmed = customModelInput.trim();
     if (!trimmed) return; // 清空 = 放弃自定义,保持当前选择
-    if (trimmed === settings.modelByProvider?.[selectedProviderId]) return;
+    const storedModel =
+      selectedProviderId === 'custom-openai'
+        ? settings.customOpenAI?.model
+        : settings.modelByProvider?.[selectedProviderId];
+    if (trimmed === storedModel) return;
     setSelectedModelId(trimmed);
     await setModel(selectedProviderId, trimmed);
   };
@@ -310,12 +327,14 @@ function LlmSection() {
     setTesting(true);
     try {
       const key =
-        activeMode === 'plan'
-          ? settings.planApiKeys?.[selectedProviderId]
-          : settings.apiKeys?.[selectedProviderId];
+        selectedProviderId === 'custom-openai'
+          ? settings.customOpenAI?.apiKey
+          : activeMode === 'plan'
+            ? settings.planApiKeys?.[selectedProviderId]
+            : settings.apiKeys?.[selectedProviderId];
       const baseUrlOverride =
         selectedProviderId === 'custom-openai'
-          ? settings.customOpenAI?.baseUrl
+          ? settings.apiBaseUrlOverride?.[selectedProviderId] || settings.customOpenAI?.baseUrl
           : settings.apiBaseUrlOverride?.[selectedProviderId];
       const res = await window.opendeploy.llmTestConnection({
         providerId: selectedProviderId,
@@ -332,7 +351,11 @@ function LlmSection() {
 
   const handleProviderSelect = async (provider: LlmProvider): Promise<void> => {
     setSelectedProviderId(provider.id);
-    setApiKeyInput(settings.apiKeys?.[provider.id] ?? '');
+    setApiKeyInput(
+      provider.id === 'custom-openai'
+        ? settings.customOpenAI?.apiKey ?? ''
+        : settings.apiKeys?.[provider.id] ?? ''
+    );
     setPlanKeyInput(settings.planApiKeys?.[provider.id] ?? '');
     setBaseUrlInput(settings.apiBaseUrlOverride?.[provider.id] ?? '');
     setSaved(false);
@@ -422,7 +445,7 @@ function LlmSection() {
                 <div className="prov-sub">{p.sub}</div>
                 <div className="prov-row">
                   <span>
-                    {p.id === 'ollama'
+                    {p.id === 'ollama' || p.id === 'custom-openai'
                       ? t('settings.customModel')
                       : t('settings.modelCount', { count: p.models.length })}
                   </span>
@@ -500,6 +523,38 @@ function LlmSection() {
               />
               <datalist id="ollama-model-list">
                 {(settings.fetchedModelsByProvider?.['ollama']?.ids ?? []).map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* custom-openai 没有内置模型目录 — 提供自由输入 + 已拉取 id 补全。
+          保存走 setModel('custom-openai', id) → customOpenAI.model,聊天请求同源。 */}
+      {selectedProviderId === 'custom-openai' && (
+        <section style={{ marginBottom: 24 }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>{t('settings.model')}</h3>
+          <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+            {t('settings.customModelFetchHint')}
+          </p>
+          <div className="setting-row" style={{ borderBottom: 'none' }}>
+            <div>
+              <div className="lbl">{t('settings.customModelLabel')}</div>
+            </div>
+            <div className="ctl">
+              <input
+                type="text"
+                value={customModelInput}
+                onChange={(e) => { setCustomModelInput(e.target.value); setSaved(false); }}
+                onBlur={() => { void handleCustomModelBlur(); }}
+                placeholder={t('settings.customModelPlaceholder')}
+                style={{ minWidth: 280 }}
+                list="custom-openai-model-list"
+              />
+              <datalist id="custom-openai-model-list">
+                {(settings.fetchedModelsByProvider?.['custom-openai']?.ids ?? []).map((id) => (
                   <option key={id} value={id} />
                 ))}
               </datalist>

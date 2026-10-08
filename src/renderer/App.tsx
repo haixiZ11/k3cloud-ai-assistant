@@ -165,9 +165,11 @@ export function App() {
     const mode: 'payg' | 'plan' = settings.apiAccessMode?.[provider] ?? 'payg';
     const hasApiKey =
       !needsApiKey ||
-      !!(mode === 'plan'
-        ? settings.planApiKeys?.[provider]
-        : settings.apiKeys?.[provider]);
+      !!(provider === 'custom-openai'
+        ? settings.customOpenAI?.apiKey
+        : mode === 'plan'
+          ? settings.planApiKeys?.[provider]
+          : settings.apiKeys?.[provider]);
     if (!hasApiKey) {
       setPage('wizard');
     }
