@@ -17,8 +17,19 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'knowledge');
 const BUNDLE_VERSION = process.env.BUNDLE_VERSION ?? '0.1.0';
 
+/**
+ * SHA-256 of a skill content file, normalized to LF line endings.
+ *
+ * MUST stay byte-for-byte identical in effect to `hashNormalizedFile` in
+ * `src/main/skills/integrity.ts` — the manifest written here is what the
+ * runtime `verifyIntegrity` checks against, so a divergence between the two
+ * makes every bundled skill report as tampered. Normalizing keeps the digest
+ * independent of checkout line endings (Windows `core.autocrlf=true` writes
+ * CRLF, which would otherwise flip every digest).
+ */
 async function hashFile(p: string): Promise<string> {
-  return createHash('sha256').update(await fs.readFile(p)).digest('hex');
+  const text = await fs.readFile(p, 'utf8');
+  return createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
 }
 
 async function listSkillFiles(dir: string): Promise<string[]> {

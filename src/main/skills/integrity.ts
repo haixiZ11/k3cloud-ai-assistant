@@ -32,17 +32,35 @@ async function listSkillFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * SHA-256 of a skill content file, **normalized to LF line endings**.
+ *
+ * Hashing raw bytes would make the digest a function of the checkout, not of
+ * the content: with `core.autocrlf=true` (the default on Windows) git writes
+ * CRLF into the working tree, so every skill hashes differently than the
+ * manifest generated from an LF checkout. `verifyIntegrity` would then
+ * report all bundled skills as tampered and the first-launch seed would
+ * refuse to install the knowledge base.
+ *
+ * Only `.md` files are ever passed here (see `listSkillFiles`), so decoding
+ * as UTF-8 is safe; a lone CRLF→LF normalization cannot corrupt them.
+ */
+async function hashNormalizedFile(p: string): Promise<string> {
+  const text = await fs.readFile(p, 'utf8');
+  return createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+}
+
+/**
  * Deterministic SHA-256 over the full contents of a skill directory. Hashes
  * each file individually, concatenates `<relative-path>:<file-sha>\n` in
  * sorted order, then hashes that. A change to any file — SKILL.md or a
- * prompt/reference — flips the digest; file order, file mtime, and parent
- * path don't affect it.
+ * prompt/reference — flips the digest; file order, file mtime, parent path,
+ * and line endings don't affect it.
  */
 export async function hashSkillDirectory(dir: string): Promise<string> {
   const relFiles = await listSkillFiles(dir);
   const entries: string[] = [];
   for (const rel of relFiles) {
-    const fileHash = await hashFile(path.join(dir, rel));
+    const fileHash = await hashNormalizedFile(path.join(dir, rel));
     entries.push(`${rel}:${fileHash}\n`);
   }
   return createHash('sha256').update(entries.join('')).digest('hex');
