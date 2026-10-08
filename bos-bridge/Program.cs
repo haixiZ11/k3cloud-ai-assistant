@@ -38,6 +38,32 @@ namespace OpenDeploy.BosBridge
             }
             resolver.Hook();
 
+            // FlatShake checksum only needs the ServiceFacade assembly — it
+            // does NOT depend on the expensive DcxmlSerializer schema
+            // universe. Handle it before BosContext.Initialize so a login
+            // probe doesn't pay the schema-build cost.
+            var cmd0 = args.Length > 0 ? args[0] : "serve";
+            if (cmd0 == "flatshake")
+            {
+                if (args.Length < 7)
+                {
+                    LogStderr("usage: flatshake <data> <algo> <timestamp> <nonce> <ccsDt> <vn>");
+                    return 1;
+                }
+                try
+                {
+                    var value = BosContext.ComputeFlatShakeViaHandler(
+                        args[1], args[2], args[3], args[4], args[5], args[6]);
+                    Console.WriteLine(value);
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    LogStderr($"flatshake_failed: {Unwrap(ex).GetType().Name}: {Unwrap(ex).Message}");
+                    return 2;
+                }
+            }
+
             BosContext ctx;
             try
             {
