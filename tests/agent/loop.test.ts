@@ -223,9 +223,20 @@ describe('runAgentLoop error logging', () => {
     process.env.OPENDEPLOY_HOME = tmp;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (prevHome === undefined) delete process.env.OPENDEPLOY_HOME;
     else process.env.OPENDEPLOY_HOME = prevHome;
+    // Fire-and-forget trace writes (void writeTurnTrace → fs.appendFile) may
+    // still hold file handles open — Windows refuses to delete open files
+    // (EPERM). Retry briefly so teardown doesn't flake.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        rmSync(tmp, { recursive: true, force: true });
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -293,9 +304,20 @@ describe('runAgentLoop trace (Plan 5.13)', () => {
     process.env.OPENDEPLOY_HOME = tmp;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (prevHome === undefined) delete process.env.OPENDEPLOY_HOME;
     else process.env.OPENDEPLOY_HOME = prevHome;
+    // Fire-and-forget trace writes (void writeTurnTrace → fs.appendFile) may
+    // still hold file handles open — Windows refuses to delete open files
+    // (EPERM). Retry briefly so teardown doesn't flake.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        rmSync(tmp, { recursive: true, force: true });
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -451,5 +473,107 @@ describe('runAgentLoop trace (Plan 5.13)', () => {
     const rec = JSON.parse(lines[0]);
     expect(rec.errored).toBe(true);
     expect(rec.errorMessage).toContain('HTTP 500');
+  });
+});
+
+describe('runAgentLoop abort (stop button regression)', () => {
+  it('returns promptly when aborted while a tool is executing (hung RPC)', async () => {
+    const ctrl = new AbortController();
+    const registry = new ToolRegistry();
+    let toolStarted: () => void = () => {};
+    const started = new Promise<void>((r) => { toolStarted = r; });
+    registry.register({
+      definition: { name: 'hung_tool', description: '', parameters: { type: 'object', properties: {} } },
+      // 模拟无超时的 K3 RPC — 永不 resolve;停止竞速必须放弃它而不是干等
+      execute: () => {
+        toolStarted();
+        return new Promise<string>(() => {});
+      }
+    });
+
+    const client: LlmClient = {
+      async *stream() {
+        yield { type: 'tool_call', toolCall: { id: 't1', name: 'hung_tool', arguments: {} } };
+        yield { type: 'done', finishReason: 'tool_calls' };
+      }
+    };
+
+    const events: AgentLoopEvent[] = [];
+    const loop = runAgentLoop({
+      client,
+      tools: registry,
+      initialMessages: [{ id: 'u1', role: 'user', content: 'hi', createdAt: '' }],
+      providerId: 'test',
+      apiKey: 'k',
+      onEvent: (e) => events.push(e),
+      signal: ctrl.signal
+    });
+
+    await started;
+    ctrl.abort();
+
+    let giveUp: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      giveUp = setTimeout(() => reject(new Error('loop did not abort during tool execution')), 1000);
+    });
+    try {
+      const finalMessages = await Promise.race([loop, timeout]);
+      const last = finalMessages[finalMessages.length - 1];
+      expect(last.role).toBe('tool');
+      expect(last.content).toContain('已停止');
+      // 配对完整:assistant(tool_calls) 之后必须跟 tool 结果,下轮回放才合法
+      expect(finalMessages[finalMessages.length - 2].toolCalls).toHaveLength(1);
+      expect(events.some((e) => e.type === 'done')).toBe(true);
+      expect(events.some((e) => e.type === 'error')).toBe(false);
+    } finally {
+      clearTimeout(giveUp!);
+    }
+  });
+
+  it('keeps partial content when aborted mid-stream (no throw out, no error event)', async () => {
+    const ctrl = new AbortController();
+    const client: LlmClient = {
+      async *stream(_req, optsOrSignal) {
+        yield { type: 'delta', content: 'partial ' };
+        const opts = (optsOrSignal && typeof optsOrSignal === 'object' && 'abortSignal' in optsOrSignal
+          ? optsOrSignal.abortSignal
+          : optsOrSignal) as AbortSignal | undefined;
+        await new Promise<void>((resolve) => {
+          if (opts?.aborted) resolve();
+          else opts?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        // abort 后 fetch body reader 会 reject 并穿透 client 生成器 — 同样模拟
+        throw new Error('This operation was aborted');
+      }
+    };
+
+    const events: AgentLoopEvent[] = [];
+    const loop = runAgentLoop({
+      client,
+      tools: new ToolRegistry(),
+      initialMessages: [{ id: 'u1', role: 'user', content: 'hi', createdAt: '' }],
+      providerId: 'test',
+      apiKey: 'k',
+      onEvent: (e) => events.push(e),
+      signal: ctrl.signal
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    ctrl.abort();
+
+    let giveUp: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      giveUp = setTimeout(() => reject(new Error('loop did not abort mid-stream')), 1000);
+    });
+    try {
+      const finalMessages = await Promise.race([loop, timeout]);
+      const last = finalMessages[finalMessages.length - 1];
+      expect(last.role).toBe('assistant');
+      expect(last.content).toContain('partial');
+      expect(events.some((e) => e.type === 'error')).toBe(false);
+      expect(events.some((e) => e.type === 'done')).toBe(true);
+    } finally {
+      clearTimeout(giveUp!);
+    }
   });
 });

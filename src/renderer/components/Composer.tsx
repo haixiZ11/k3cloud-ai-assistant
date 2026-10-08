@@ -56,7 +56,9 @@ export function Composer({ llmProviderId, presetText }: ComposerProps) {
     if (!text.trim() || isStreaming) return;
     const msg = text;
     setText('');
-    await sendMessage(msg, effectiveProviderId, apiKey, accessMode);
+    const ok = await sendMessage(msg, effectiveProviderId, apiKey, accessMode);
+    // IPC 层发送失败时还原输入,用户不必重打;流式中的错误走 error 事件,不经过这里。
+    if (!ok) setText(msg);
   };
 
   return (
@@ -69,6 +71,9 @@ export function Composer({ llmProviderId, presetText }: ComposerProps) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
+              // IME 组合中(中文输入法选词确认)的 Enter 不发送 —
+              // 否则中文用户每次回车选词都会把半截输入误发出去。
+              if (e.nativeEvent.isComposing) return;
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 void submit();

@@ -30,8 +30,17 @@ beforeEach(() => {
   _reset();
 });
 
-afterEach(() => {
-  rmSync(testDir, { recursive: true, force: true });
+afterEach(async () => {
+  // Plugin writes can be fire-and-forget; on Windows a still-open handle
+  // makes rmSync fail with EPERM. Retry briefly so teardown doesn't flake.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      rmSync(testDir, { recursive: true, force: true });
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
   delete process.env.OPENDEPLOY_HOME;
   _reset();
 });

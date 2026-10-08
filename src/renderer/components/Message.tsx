@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, memo, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ChatMessage } from '@renderer/stores/chat-store';
 import { MarkdownBlock } from './MarkdownBlock';
@@ -58,7 +58,11 @@ export function derivePendingActivity(message: ChatMessage): PendingActivity | n
  * finishes; while it's still `running` the head isn't interactive because
  * there's no body yet.
  */
-function ToolCallCard({ call }: { call: ToolCall }) {
+/**
+ * Memoized — 流式期间每个 delta 都会触发列表重渲染,memo 让历史消息
+ * (store 里对象不可变更新、引用不变)完全跳过重渲染。
+ */
+const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation();
   const hasResult = Boolean(call.result);
@@ -88,7 +92,7 @@ function ToolCallCard({ call }: { call: ToolCall }) {
       )}
     </div>
   );
-}
+});
 
 /**
  * Render the assistant turn body. If `blocks` is present, render in arrival
@@ -139,7 +143,11 @@ function findLastTextIndex(blocks: NonNullable<ChatMessage['blocks']>): number {
   return -1;
 }
 
-export function Message({ message }: MessageProps) {
+/**
+ * Memoized — 见 ToolCallCard。store 的消息更新是不可变的(只替换变化的
+ * 那一条),历史消息引用恒定,默认浅比较即可跳过重渲染。
+ */
+export const Message = memo(function Message({ message }: MessageProps) {
   const { t } = useTranslation();
   const who = message.role === 'user' ? 'user' : 'ai';
   const name = message.role === 'user' ? t('messages.user') : t('messages.assistant');
@@ -187,4 +195,4 @@ export function Message({ message }: MessageProps) {
       </div>
     </div>
   );
-}
+});

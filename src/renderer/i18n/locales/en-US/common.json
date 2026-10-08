@@ -29,6 +29,10 @@
     "close": "Close",
     "loading": "Loading…"
   },
+  "markdown": {
+    "copyCode": "Copy code",
+    "copied": "Copied"
+  },
   "composer": {
     "placeholder": "Tell me.",
     "send": "Send",

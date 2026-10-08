@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from '@shared/llm-types';
+import type { Message, ToolCall, ToolResult } from '@shared/llm-types';
 import type { LlmClient } from '../llm/types';
 import type { RawCapture } from '../llm/raw-dump';
 import type { ToolRegistry } from './tools';
@@ -103,50 +103,61 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
     // lossless); only the slice the model sees has old tool payloads replaced
     // with a placeholder. See agent/history-prune.ts for the rationale.
     const rawCapture = params.rawCaptureFactory?.(iter);
-    for await (const ev of params.client.stream({
-      providerId: params.providerId,
-      apiKey: params.apiKey,
-      model: params.model,
-      messages: pruneOldToolResults(messages, KEEP_LAST_N_TOOL_RESULTS),
-      tools: toolDefs.length > 0 ? toolDefs : undefined
-    }, { abortSignal: params.signal, rawCapture })) {
-      if (ev.type === 'delta') {
-        assistantContent += ev.content;
-        blocks = appendTextDelta(blocks, ev.content);
-        emit({ type: 'delta', content: ev.content });
-      } else if (ev.type === 'reasoning_delta') {
-        // 累加 thinking text, 下一轮构造请求时会被 client 回传给 LLM 满足
-        // DeepSeek V4 / Claude extended-thinking 的多轮契约。
-        reasoningContent += ev.content;
-        emit({ type: 'reasoning_delta', content: ev.content });
-      } else if (ev.type === 'reasoning_signature') {
-        // Claude extended-thinking 特有: 必须和 thinking 文本配对回传。
-        reasoningSignature = ev.signature;
-        emit({ type: 'reasoning_signature', signature: ev.signature });
-      } else if (ev.type === 'tool_call') {
-        toolCalls.push(ev.toolCall);
-        blocks = appendToolUse(blocks, ev.toolCall.id);
-        emit({ type: 'tool_call', toolCall: ev.toolCall });
-      } else if (ev.type === 'usage') {
-        lastUsageOut = ev.outputTokens;
-        emit({ type: 'usage', outputTokens: ev.outputTokens });
-      } else if (ev.type === 'done') {
-        finishReason = ev.finishReason;
-      } else if (ev.type === 'error') {
-        errored = true;
-        errorMessage = ev.error;
-        assistantContent = ev.error;
-        // Persist to app.log for post-mortem — LLM protocol bugs (DeepSeek V4
-        // reasoning_content / Claude signature mismatch / 400 invalid tool
-        // schema) all land here. The error string already contains HTTP
-        // status + full body from the client, so grepping the log is enough
-        // to diagnose without re-running the session.
-        void logger.error(
-          `LLM stream error provider=${params.providerId} iteration ${iter}: ${ev.error}`
-        );
-        emit({ type: 'error', error: ev.error });
-        break;
+    try {
+      for await (const ev of params.client.stream({
+        providerId: params.providerId,
+        apiKey: params.apiKey,
+        model: params.model,
+        messages: pruneOldToolResults(messages, KEEP_LAST_N_TOOL_RESULTS),
+        tools: toolDefs.length > 0 ? toolDefs : undefined
+      }, { abortSignal: params.signal, rawCapture })) {
+        if (ev.type === 'delta') {
+          assistantContent += ev.content;
+          blocks = appendTextDelta(blocks, ev.content);
+          emit({ type: 'delta', content: ev.content });
+        } else if (ev.type === 'reasoning_delta') {
+          // 累加 thinking text, 下一轮构造请求时会被 client 回传给 LLM 满足
+          // DeepSeek V4 / Claude extended-thinking 的多轮契约。
+          reasoningContent += ev.content;
+          emit({ type: 'reasoning_delta', content: ev.content });
+        } else if (ev.type === 'reasoning_signature') {
+          // Claude extended-thinking 特有: 必须和 thinking 文本配对回传。
+          reasoningSignature = ev.signature;
+          emit({ type: 'reasoning_signature', signature: ev.signature });
+        } else if (ev.type === 'tool_call') {
+          toolCalls.push(ev.toolCall);
+          blocks = appendToolUse(blocks, ev.toolCall.id);
+          emit({ type: 'tool_call', toolCall: ev.toolCall });
+        } else if (ev.type === 'usage') {
+          lastUsageOut = ev.outputTokens;
+          emit({ type: 'usage', outputTokens: ev.outputTokens });
+        } else if (ev.type === 'done') {
+          finishReason = ev.finishReason;
+        } else if (ev.type === 'error') {
+          errored = true;
+          errorMessage = ev.error;
+          assistantContent = ev.error;
+          // Persist to app.log for post-mortem — LLM protocol bugs (DeepSeek V4
+          // reasoning_content / Claude signature mismatch / 400 invalid tool
+          // schema) all land here. The error string already contains HTTP
+          // status + full body from the client, so grepping the log is enough
+          // to diagnose without re-running the session.
+          void logger.error(
+            `LLM stream error provider=${params.providerId} iteration ${iter}: ${ev.error}`
+          );
+          emit({ type: 'error', error: ev.error });
+          break;
+        }
       }
+    } catch (err) {
+      // 用户点了停止:abort 会让 fetch / reader.read() 抛 AbortError 并穿透
+      // client 生成器。这里不向上抛 — 保留已生成的半截内容,走下方正常收尾
+      // (push assistantMsg + emit done),ipc 层才能把这段对话落盘;向上抛的
+      // 话半截回复既不显示也不持久化。非 abort 的异常原样上抛。
+      if (!params.signal?.aborted) throw err;
+    } finally {
+      // abort 抛出路径 client 生成器来不及调 onClose — 幂等,重复调用安全。
+      await rawCapture?.onClose().catch(() => {});
     }
 
     const llmElapsedMs = Date.now() - turnStart;
@@ -200,13 +211,50 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
         return r;
       });
     };
-    const results = allSafe
-      ? await Promise.all(toolCalls.map((tc, i) => wrap(i, tc)))
-      : await (async () => {
-          const out = [];
-          for (let i = 0; i < toolCalls.length; i++) out.push(await wrap(i, toolCalls[i]));
-          return out;
-        })();
+
+    // 工具执行与停止信号竞速 — K3 RPC 等长调用没有超时,若不竞速,用户点
+    // 停止后循环会一直卡在 await 上,"停止"按钮形同虚设。被放弃的调用会在
+    // 后台继续跑完(无法真正取消)但结果被丢弃;未开始/被中断的调用补一条
+    // "已停止"结果,保持 assistant(tool_calls)→tool 配对完整、下一轮可回放。
+    const signal = params.signal;
+    const abortWait: Promise<null> | null = signal
+      ? new Promise<null>((resolve) => {
+          if (signal.aborted) {
+            resolve(null);
+          } else {
+            signal.addEventListener('abort', () => resolve(null), { once: true });
+          }
+        })
+      : null;
+    const raced = <T,>(p: Promise<T>): Promise<T | null> =>
+      abortWait ? Promise.race([p, abortWait]) : p;
+
+    const results: ToolResult[] = new Array(toolCalls.length);
+    if (allSafe) {
+      const batch = await raced(Promise.all(toolCalls.map((tc, i) => wrap(i, tc))));
+      if (batch) {
+        for (let i = 0; i < toolCalls.length; i++) results[i] = batch[i];
+      }
+      // batch 为 null(abort 先到)→ 全部落入下方合成结果,不做半保留 —
+      // 并行批只含 parallelSafe 只读工具,丢弃结果无害,下轮可重跑。
+    } else {
+      for (let i = 0; i < toolCalls.length; i++) {
+        if (signal?.aborted) break;
+        const r = await raced(wrap(i, toolCalls[i]));
+        if (!r) break; // abort 在工具执行中途到达
+        results[i] = r;
+      }
+    }
+    for (let i = 0; i < toolCalls.length; i++) {
+      if (!results[i]) {
+        results[i] = {
+          toolCallId: '',
+          content: '（用户已停止,本次工具调用未执行或被中断）',
+          isError: true
+        };
+        toolEnds[i] = toolStarts[i]; // trace 时长归零,避免负数
+      }
+    }
 
     for (let i = 0; i < toolCalls.length; i++) {
       const tc = toolCalls[i];
@@ -244,6 +292,13 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
       llmElapsedMs,
       totalElapsedMs: Date.now() - turnStart
     });
+
+    // 停止发生在工具阶段:补完 tool 结果后就此收尾 — 不再带着已 abort 的
+    // signal 发起下一轮 LLM 请求(那会被立刻拒绝并误报成错误横幅)。
+    if (signal?.aborted) {
+      emit({ type: 'done' });
+      return messages;
+    }
   }
 
   // Soft cap reached. Don't throw — that surfaces as a red error and the user

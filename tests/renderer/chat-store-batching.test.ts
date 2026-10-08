@@ -102,12 +102,37 @@ describe('chat-store text batching', () => {
     await sendAndCaptureStream();
     emit({ type: 'delta', content: 'Hi ' });
     emit({ type: 'delta', content: 'there' });
+    // Deltas are throttled — they land on the message only after the flush
+    // window (100ms). Immediately after emit they must still be invisible…
+    const immediate = useChatStore.getState().messages.at(-1)!;
+    expect(immediate.pendingText).toBeUndefined();
+    expect(immediate.content).toBe('');
+    expect(immediate.blocks).toEqual([]);
+    // …and appear (batched, one set() for both) after the window elapses.
+    await new Promise((r) => setTimeout(r, 150));
     const last = useChatStore.getState().messages.at(-1)!;
     expect(last.pendingText).toBe('Hi there');
     expect(last.pendingTokens).toBe(2);
     expect(last.tokensExact).toBeFalsy();
     expect(last.content).toBe('');
     expect(last.blocks).toEqual([]);
+  });
+
+  it('flushes buffered deltas synchronously when a low-frequency event arrives', async () => {
+    await sendAndCaptureStream();
+    emit({ type: 'delta', content: 'Hi ' });
+    emit({ type: 'delta', content: 'there' });
+    // Low-frequency events (tool_call/usage/done/error) flush the buffer
+    // immediately — no waiting for the throttle window, and no reordering
+    // between text and the tool card.
+    emit({ type: 'tool_call', toolCallId: 'c1', toolCallName: 't', toolCallArgs: '{}' });
+    const last = useChatStore.getState().messages.at(-1)!;
+    expect(last.content).toBe('Hi there');
+    expect(last.pendingText).toBeUndefined();
+    expect(last.blocks).toEqual([
+      { type: 'text', text: 'Hi there' },
+      { type: 'tool_use', callId: 'c1' }
+    ]);
   });
 
   it('flushes pendingText to text block on tool_call event AND records startedAt on the call', async () => {

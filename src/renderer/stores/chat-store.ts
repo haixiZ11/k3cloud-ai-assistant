@@ -59,7 +59,7 @@ interface ChatState {
     providerId: string,
     apiKey: string | undefined,
     accessMode?: 'payg' | 'plan'
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   abort: () => Promise<void>;
   clear: () => void;
   loadConversation: (id: string) => Promise<void>;
@@ -73,10 +73,9 @@ const makeChatId = () => makeId('c');
  * done boundaries. Returns the original message unchanged (identity) when
  * there's nothing to flush.
  *
- * NOTE: error / abort paths do NOT currently flush — pendingText is
- * discarded along with the streaming state. Acceptable for v0.1 since the
- * partial mid-stream text was never user-visible (UI shows token counter,
- * not the buffer). Revisit if we ever start surfacing partial responses.
+ * NOTE: error 和 abort 路径都会 flush — error 处理器在追加错误行前先 flush;
+ * abort 由主进程 loop 以 done 收尾(loop.ts 保留半截内容正常返回),所以
+ * 用户已经"等出来"的那部分回复可见、也随会话落盘,不再整体丢弃。
  */
 export function flushPendingText(msg: ChatMessage): ChatMessage {
   if (!msg.pendingText) return msg;
@@ -110,22 +109,62 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     // Subscribe to stream events (unsubscribe when done)
+    // ─── 流式渲染节流 ───
+    // delta / reasoning_delta 每秒可达几十上百次,逐条 set() 会让整个消息
+    // 列表跟着重渲染。缓冲进本 closure,每 STREAM_FLUSH_MS 批量上屏一次;
+    // 低频事件(tool_call/usage/done/error)到达时先同步 flush,保住
+    // "文字 → 工具卡片" 的边界顺序不乱。
+    const STREAM_FLUSH_MS = 100;
+    let bufText = '';
+    let bufTokens = 0;
+    let bufDirty = false;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushBuffer = (): void => {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (!bufDirty) return;
+      bufDirty = false;
+      const text = bufText;
+      const tokens = bufTokens;
+      bufText = '';
+      bufTokens = 0;
+      const msgs = [...get().messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant') {
+        msgs[msgs.length - 1] = {
+          ...last,
+          pendingText: (last.pendingText ?? '') + text,
+          ...(last.tokensExact ? {} : { pendingTokens: (last.pendingTokens ?? 0) + tokens })
+        };
+        set({ messages: msgs });
+      }
+    };
+    const scheduleFlush = (): void => {
+      if (flushTimer !== null) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushBuffer();
+      }, STREAM_FLUSH_MS);
+    };
+
     const unsubscribe = window.opendeploy.llmOnStream((ev: LlmStreamEvent) => {
       if (ev.requestId !== get().currentRequestId) return;
 
       if (ev.type === 'delta' && ev.content) {
-        const msgs = [...get().messages];
-        const last = msgs[msgs.length - 1];
-        if (last && last.role === 'assistant') {
-          msgs[msgs.length - 1] = {
-            ...last,
-            pendingText: (last.pendingText ?? '') + ev.content,
-            // tokensExact frozen → don't tick estimate; provider's usage value wins
-            ...(last.tokensExact ? {} : { pendingTokens: (last.pendingTokens ?? 0) + 1 })
-          };
-          set({ messages: msgs });
-        }
+        bufText += ev.content;
+        bufTokens += 1;
+        bufDirty = true;
+        scheduleFlush();
+      } else if (ev.type === 'reasoning_delta' && ev.content) {
+        // DeepSeek / Claude extended-thinking 的推理阶段:文字不进正文,
+        // 但计数器要动 — 否则思考期间界面看起来像冻死,用户会以为卡了。
+        bufTokens += 1;
+        bufDirty = true;
+        scheduleFlush();
       } else if (ev.type === 'tool_call') {
+        flushBuffer(); // 先把缓冲的文字落盘,再挂工具卡片 — 保住到达顺序
         const msgs = [...get().messages];
         const last = msgs[msgs.length - 1];
         if (last && last.role === 'assistant') {
@@ -165,6 +204,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
       } else if (ev.type === 'usage') {
+        flushBuffer(); // 先把缓冲的估算 +1 落上去,随后精确值整体覆盖
         // Ignore meaningless usage (e.g. Ollama emitting 0 when eval_count is missing) —
         // otherwise the delta-based estimate gets clobbered with 0 and stamped exact.
         if (typeof ev.outputTokens !== 'number' || ev.outputTokens <= 0) return;
@@ -179,6 +219,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({ messages: msgs });
         }
       } else if (ev.type === 'done') {
+        flushBuffer(); // 收尾前把尾巴上的 delta 落盘,随 flushPendingText 一起提交
         const msgs = [...get().messages];
         const last = msgs[msgs.length - 1];
         if (last) {
@@ -196,6 +237,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ messages: msgs, isStreaming: false, currentRequestId: null });
         unsubscribe();
       } else if (ev.type === 'error') {
+        flushBuffer(); // 错误信息追加到完整文本上,缓冲的尾巴不能丢
         const errText = ev.error ?? 'Unknown error';
         const msgs = [...get().messages];
         const last = msgs[msgs.length - 1];
@@ -235,20 +277,66 @@ export const useChatStore = create<ChatState>((set, get) => ({
         userMessage: text
       });
       set({ currentRequestId: requestId, conversationId: get().conversationId ?? requestId });
+      return true;
     } catch (err) {
+      flushBuffer(); // 已到达的 delta 不能随失败一起丢
       unsubscribe();
-      set({ error: err instanceof Error ? err.message : String(err), isStreaming: false });
+      const errMsg = err instanceof Error ? err.message : String(err);
+      // 占位 assistant 消息自身的 isStreaming 也要清掉 — Message 组件的
+      // thinking 动画和 token 轮询读的是消息上的标志,只复位 store 级
+      // isStreaming 的话,失败后动画和 500ms 轮询会永久空转。
+      const msgs = [...get().messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant' && last.isStreaming) {
+        msgs[msgs.length - 1] = {
+          ...last,
+          isStreaming: false,
+          pendingTokens: undefined,
+          tokensExact: undefined
+        };
+      }
+      set({ messages: msgs, error: errMsg, isStreaming: false });
+      return false;
     }
   },
 
   abort: async () => {
     const id = get().currentRequestId;
-    if (!id) return;
-    await window.opendeploy.llmAbort(id);
-    // We don't clear isStreaming here — the main process will emit 'done'
-    // (or 'error') after the abort lands, and the existing handler picks
-    // it up. That keeps the streaming-cursor / button states consistent
-    // with the actual stream lifecycle.
+    const finishLocally = () => {
+      const msgs = [...get().messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant' && last.isStreaming) {
+        const flushed = flushPendingText(last);
+        msgs[msgs.length - 1] = {
+          ...flushed,
+          isStreaming: false,
+          pendingTokens: undefined,
+          tokensExact: undefined
+        };
+      }
+      set({ messages: msgs, isStreaming: false, currentRequestId: null });
+    };
+
+    // 兜底看门狗 — 无条件布置:正常情况下主进程收到 abort 后立即以 done
+    // 收尾(loop 已与停止信号竞速),done 会先把 currentRequestId 清掉,
+    // 看门狗触发时发现 id 对不上就自动退位。若遇到任何意料之外的挂起,
+    // 10s 后强制解锁,用户绝不被永久卡在"停止不了"的状态。
+    window.setTimeout(() => {
+      if (get().currentRequestId !== id) return;
+      finishLocally();
+    }, 10_000);
+
+    if (!id) {
+      // 没有可取消的请求但 UI 还在流式状态 = 状态已失联,立即本地解锁
+      if (get().isStreaming) finishLocally();
+      return;
+    }
+    try {
+      await window.opendeploy.llmAbort(id);
+    } catch (err) {
+      // IPC 失败不再静默吞掉 — 控制台留痕,看门狗负责解锁
+      console.error('llm:abort IPC failed', err);
+    }
   },
 
   clear: () => {

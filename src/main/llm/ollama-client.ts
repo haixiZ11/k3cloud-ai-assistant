@@ -34,6 +34,9 @@ export function createOllamaClient(opts: OllamaOpts): LlmClient {
         });
       } catch (err) {
         await rawCapture?.onClose();
+        // 用户停止引发的 fetch 中断不是错误 — 静默收尾,loop 的 abort
+        // 处理负责 flush 半截内容并发 done;yield error 会误报红色横幅。
+        if (signal?.aborted) return;
         yield { type: 'error', error: err instanceof Error ? err.message : String(err) };
         return;
       }

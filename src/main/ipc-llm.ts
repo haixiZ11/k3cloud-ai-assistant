@@ -56,6 +56,9 @@ export function registerLlmIpc(getMainWindow: () => BrowserWindow | null): void 
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const abortController = new AbortController();
     activeAborts.set(requestId, abortController);
+    // 诊断"停止失灵":记录每个请求的生命周期锚点,app.log 里能对出
+    // 停止点击是否有到达、到达时控制器还在不在。
+    void logger.info(`llm:send ${requestId} provider=${req.providerId}`);
 
     // Build message history. Three sources, in order of preference:
     //   1. In-memory `activeConversations` — set after every send, fastest path
@@ -248,6 +251,8 @@ export function registerLlmIpc(getMainWindow: () => BrowserWindow | null): void 
 
   ipcMain.handle('llm:abort', async (_event, requestId: string) => {
     const ctrl = activeAborts.get(requestId);
+    // found=false = 点击到达了但请求已收尾(或 id 失联)——排查"停止失灵"的关键信号
+    void logger.info(`llm:abort ${requestId} found=${ctrl ? 'yes' : 'no'}`);
     if (ctrl) ctrl.abort();
   });
 
