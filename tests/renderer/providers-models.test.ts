@@ -2,15 +2,24 @@ import { describe, it, expect } from 'vitest';
 import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel } from '../../src/renderer/data/providers';
 
 describe('providers + models', () => {
-  it('every provider declares models[] (Ollama may be empty)', () => {
+  it('every provider declares models[] (Ollama / custom-openai may be empty)', () => {
     for (const p of PROVIDERS) {
       expect(p.models).toBeDefined();
       expect(Array.isArray(p.models)).toBe(true);
-      if (p.id !== 'ollama') {
+      // custom-openai 是自由输入型 provider (模型名手填),内置目录为空是设计使然;
+      // ollama 同理。其余每家必须有目录且 recommended 恰好一条。
+      if (p.id !== 'ollama' && p.id !== 'custom-openai') {
         expect(p.models.length).toBeGreaterThan(0);
-        // recommended 标记在每家恰好一条
         expect(p.models.filter((m) => m.recommended).length).toBe(1);
       }
+    }
+  });
+
+  it('every builtin provider declares a baseUrl (URL 字段展示用)', () => {
+    for (const p of PROVIDERS) {
+      if (p.id === 'custom-openai') continue; // 地址由用户填写 (customOpenAI.baseUrl)
+      expect(p.baseUrl, `${p.id}.baseUrl missing`).toBeTruthy();
+      expect(p.baseUrl.startsWith('http')).toBe(true);
     }
   });
 
@@ -38,9 +47,13 @@ describe('providers + models', () => {
     expect(m?.id).toBe('deepseek-v4-pro');
   });
 
-  it('resolveActiveModel falls back to recommended when stored id missing', () => {
+  it('resolveActiveModel keeps stored custom ids (降级元数据,不再回退丢弃)', () => {
+    // 回归锁:用户手填 / 后台拉到的新模型 id 不在内置目录时必须原样透传,
+    // 否则"同样的 API 和 KEY 却无法调用新模型"。
     const m = resolveActiveModel('deepseek', { deepseek: 'no-such-model' });
-    expect(m?.id).toBe('deepseek-v4-flash'); // recommended in our table
+    expect(m?.id).toBe('no-such-model');
+    expect(m?.label).toBe('no-such-model');
+    expect(m?.contextWindow).toBeGreaterThan(0);
   });
 
   it('resolveActiveModel falls back to recommended when not stored at all', () => {

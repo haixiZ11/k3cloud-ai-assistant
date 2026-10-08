@@ -215,3 +215,32 @@ export function createAnthropicClient(opts: AnthropicOpts): LlmClient {
     }
   };
 }
+
+/**
+ * List model ids from the Anthropic /v1/models endpoint. baseUrl here is the
+ * full versioned root (PROVIDER_CONFIGS.claude.baseUrl = '.../v1'), matching
+ * what the chat client already POSTs `${baseUrl}/messages` to.
+ */
+export async function listAnthropicModels(input: {
+  baseUrl: string;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<string[]> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${input.baseUrl}/models`, {
+    method: 'GET',
+    headers: {
+      'x-api-key': input.apiKey ?? '',
+      'anthropic-version': '2023-06-01'
+    }
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
+  const data = await response.json() as { data?: Array<{ id?: string }> };
+  const models = (data.data ?? [])
+    .map((m) => (typeof m.id === 'string' ? m.id.trim() : ''))
+    .filter((id) => id.length > 0);
+  return Array.from(new Set(models));
+}

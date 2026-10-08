@@ -1,8 +1,8 @@
 import type { LlmClient, ProviderConfig } from './types';
 import { PROVIDER_CONFIGS } from './types';
-import { createOpenAiClient } from './openai-client';
-import { createAnthropicClient } from './anthropic-client';
-import { createOllamaClient } from './ollama-client';
+import { createOpenAiClient, listOpenAiModels } from './openai-client';
+import { createAnthropicClient, listAnthropicModels } from './anthropic-client';
+import { createOllamaClient, listOllamaModels } from './ollama-client';
 
 export type AccessMode = 'payg' | 'plan';
 
@@ -55,5 +55,39 @@ export function createLlmClient(providerId: string, opts: ClientOptions = {}): L
       return createAnthropicClient({ baseUrl, defaultModel });
     case 'ollama':
       return createOllamaClient({ baseUrl, defaultModel });
+  }
+}
+
+export interface ListModelsOptions extends ClientOptions {
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Fetch the provider's live model catalog. Dispatches on the provider's wire
+ * format: OpenAI-compatible → GET /v1/models, Anthropic → GET /v1/models,
+ * Ollama → GET /api/tags. Throws on network/HTTP failure — the IPC layer
+ * catches and surfaces `{ ok: false, error }` so the renderer can silently
+ * fall back to the bundled catalog.
+ */
+export async function listModelsForProvider(
+  providerId: string,
+  opts: ListModelsOptions = {}
+): Promise<string[]> {
+  // custom-openai has no built-in endpoint — the renderer supplies its
+  // customOpenAI.baseUrl via baseUrlOverride.
+  if (providerId === 'custom-openai') {
+    const baseUrl = opts.baseUrlOverride?.trim();
+    if (!baseUrl) throw new Error('custom-openai requires a base URL');
+    return listOpenAiModels({ baseUrl, apiKey: opts.apiKey, fetchImpl: opts.fetchImpl });
+  }
+  const { baseUrl, format } = resolveProviderEndpoint(providerId, opts);
+  switch (format) {
+    case 'anthropic':
+      return listAnthropicModels({ baseUrl, apiKey: opts.apiKey, fetchImpl: opts.fetchImpl });
+    case 'ollama':
+      return listOllamaModels({ baseUrl, fetchImpl: opts.fetchImpl });
+    default:
+      return listOpenAiModels({ baseUrl, apiKey: opts.apiKey, fetchImpl: opts.fetchImpl });
   }
 }

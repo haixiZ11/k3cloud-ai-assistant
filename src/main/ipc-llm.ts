@@ -1,6 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
-import type { LlmChatRequest } from '@shared/types';
-import { createLlmClient } from './llm/factory';
+import type { LlmChatRequest, LlmProviderProbeRequest } from '@shared/types';
+import { createLlmClient, listModelsForProvider } from './llm/factory';
+import { testProviderConnection } from './llm/test-connection';
 import { runAgentLoop } from './agent/loop';
 import { createLogger } from './logger';
 import { loadSettings } from './settings';
@@ -249,6 +250,41 @@ export function registerLlmIpc(getMainWindow: () => BrowserWindow | null): void 
   ipcMain.handle('llm:abort', async (_event, requestId: string) => {
     const ctrl = activeAborts.get(requestId);
     if (ctrl) ctrl.abort();
+  });
+
+  // Model-catalog probe. Never throws — the renderer falls back to the
+  // bundled catalog on `{ ok: false }`, so a flaky network shouldn't toast.
+  ipcMain.handle('llm:listModels', async (_event, req: LlmProviderProbeRequest) => {
+    const persistedSettings = await loadSettings();
+    const baseUrlOverride =
+      req.baseUrlOverride ?? persistedSettings.apiBaseUrlOverride?.[req.providerId];
+    try {
+      const models = await listModelsForProvider(req.providerId, {
+        apiKey: req.apiKey,
+        accessMode: req.accessMode,
+        baseUrlOverride
+      });
+      return { ok: true, models };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  // Tiny real-request connectivity probe (key + model + endpoint).
+  ipcMain.handle('llm:testConnection', async (_event, req: LlmProviderProbeRequest) => {
+    const persistedSettings = await loadSettings();
+    const baseUrlOverride =
+      req.baseUrlOverride ?? persistedSettings.apiBaseUrlOverride?.[req.providerId];
+    return await testProviderConnection({
+      providerId: req.providerId,
+      apiKey: req.apiKey,
+      model: req.model,
+      accessMode: req.accessMode,
+      baseUrlOverride
+    });
   });
 
   ipcMain.handle('conversations:list', async () => {

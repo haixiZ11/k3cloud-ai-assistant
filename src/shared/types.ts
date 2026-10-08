@@ -37,6 +37,17 @@ export interface AppSettings {
   apiBaseUrlOverride?: Record<string, string>;
   /** Ollama 自定义模型名 (用户在 Settings 输入框填的). 缺省走 PROVIDERS.find(ollama).modelInputDefault. */
   ollamaModelInput?: string;
+  /**
+   * 向导(完成或跳过)已走过一次。App 的首启检测读到它就不再把用户拉回
+   * WizardPage —— 否则"在设置里切到一个还没填 key 的厂商"会被误判成
+   * 未完成 onboarding,每次启动都被弹回向导。
+   */
+  onboardingDone?: boolean;
+  /**
+   * SettingsPage 自动获取的模型目录缓存 (来自 /models 或 /api/tags)。
+   * 仅作下拉选项补充,不参与请求路由;拉取失败静默回退内置目录。
+   */
+  fetchedModelsByProvider?: Record<string, { ids: string[]; fetchedAt: number }>;
   /** User-configured knowledge sources (github / gitee / local). Defaults to empty. */
   knowledgeSources?: KnowledgeSource[];
   /** Projects configured by the user. Each owns its own ERP connection config. */
@@ -78,6 +89,32 @@ export interface LlmChatRequest {
   userMessage: string;
 }
 
+/**
+ * llmListModels / llmTestConnection 的请求载荷 — 两个"探针"调用共用。
+ * key 跟 llm:send 一样由 renderer 按 accessMode 选好桶后传入,main 不反查。
+ */
+export interface LlmProviderProbeRequest {
+  providerId: string;
+  apiKey?: string;
+  accessMode?: 'payg' | 'plan';
+  /**
+   * Base URL 覆盖(main 端直读 settings 里的 apiBaseUrlOverride 也行,但
+   * custom-openai 的地址存在 renderer 专属的 customOpenAI.baseUrl 里,
+   * renderer 统一算好传下来最简单)。
+   */
+  baseUrlOverride?: string;
+  /** testConnection 必传:要打的模型 id;listModels 忽略。 */
+  model?: string;
+}
+
+export interface TestConnectionResult {
+  ok: boolean;
+  latencyMs: number;
+  /** 实际请求的 URL — UI 显示出来,配置错端点时一眼定位。 */
+  baseUrl: string;
+  error?: string;
+}
+
 export interface LlmStreamEvent {
   requestId: string;
   type:
@@ -114,6 +151,16 @@ export interface IpcApi {
   llmSendMessage: (req: LlmChatRequest) => Promise<{ requestId: string }>;
   llmAbort: (requestId: string) => Promise<void>;
   llmOnStream: (cb: (ev: LlmStreamEvent) => void) => () => void;
+  /**
+   * 拉取 provider 的模型目录(openai 兼容 /v1/models、anthropic /v1/models、
+   * ollama /api/tags)。不抛异常,失败走 `{ ok: false, error }` — 调用方静默
+   * 回退内置目录即可。
+   */
+  llmListModels: (
+    req: LlmProviderProbeRequest
+  ) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
+  /** 发一个极小真实请求验证 baseUrl + key + model 全链路连通。 */
+  llmTestConnection: (req: LlmProviderProbeRequest) => Promise<TestConnectionResult>;
   conversationsList: () => Promise<Array<{ id: string; title: string; savedAt: string; messageCount: number }>>;
   conversationsLoad: (id: string) => Promise<{
     id: string;
