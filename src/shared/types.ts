@@ -8,8 +8,21 @@ import type { MessageBlock } from './blocks';
 export type Language = 'zh-CN' | 'en-US';
 export type Theme = 'light' | 'dark' | 'system';
 
+/**
+ * 自定义 OpenAI 兼容服务 (中转站 / 自建网关 / One API 等)。
+ * 独立于 apiKeys 存储,因为它自带 baseUrl + 模型名,单靠 provider→key 的
+ * map 表达不了。
+ */
+export interface CustomOpenAISettings {
+  vendorName?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
 export interface AppSettings {
   language: Language;
+  customOpenAI?: CustomOpenAISettings;
   theme: Theme;
   llmProvider?: string;
   apiKeys?: Record<string, string>;
