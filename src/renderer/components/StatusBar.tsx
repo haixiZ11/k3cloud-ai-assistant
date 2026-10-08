@@ -42,12 +42,18 @@ export function StatusBar({
   // Narrow selectors so unrelated settings writes (theme/language/api keys) don't re-render us.
   const modelByProvider = useSettingsStore((s) => s.settings.modelByProvider);
   const ollamaModelInput = useSettingsStore((s) => s.settings.ollamaModelInput);
+  const customOpenAI = useSettingsStore((s) => s.settings.customOpenAI);
   const provider = llmProviderId ? PROVIDER_BY_ID[llmProviderId] : undefined;
 
   let providerLabel: string;
   let maxTokens: number;
   if (!provider) {
     providerLabel = t('status.llmNotConfigured');
+    maxTokens = 0;
+  } else if (provider.id === 'custom-openai') {
+    const vendor = customOpenAI?.vendorName?.trim() || t('settings.customOpenAITitle');
+    const model = customOpenAI?.model?.trim();
+    providerLabel = model ? `${vendor} · ${model}` : vendor;
     maxTokens = 0;
   } else if (provider.id === 'ollama') {
     // Ollama context is per-model and unknowable without querying the server.

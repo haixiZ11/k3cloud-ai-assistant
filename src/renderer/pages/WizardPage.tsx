@@ -7,6 +7,8 @@ import { Icons } from '@renderer/components/icons';
 import { LogoMark } from '@renderer/components/LogoMark';
 import type { TestConnectionResult } from '@shared/types';
 
+const WIZARD_PROVIDERS = PROVIDERS.filter((p) => p.id !== 'custom-openai');
+
 interface WizardPageProps {
   /** Called after the user clicks "Finish" on the final step. */
   onFinish: () => void;
@@ -221,7 +223,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                     className="prov-grid"
                     style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}
                   >
-                    {PROVIDERS.map((p) => {
+                    {WIZARD_PROVIDERS.map((p) => {
                       const active = selectedProvider === p.id;
                       return (
                         <div
