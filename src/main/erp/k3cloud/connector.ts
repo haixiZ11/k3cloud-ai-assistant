@@ -236,6 +236,18 @@ function isCaptchaExpiredFailure(code: string | undefined, message: string | und
 }
 
 /**
+ * CheckPasswordPolicy is also returned for bad credentials (issue #13).
+ * Preserve the server's explanation; the code alone proves neither password
+ * expiry nor CAPTCHA acceptance. Failed logins must still remain disconnected.
+ */
+function passwordPolicyFailure(message: string | undefined): Error {
+  return new Error(
+    `BOS 登录失败：${message || '服务端拒绝登录'} (code=CheckPasswordPolicy) — ` +
+      '会话未完成认证。请在金蝶客户端核对登录提示，再重新连接。',
+  );
+}
+
+/**
  * BOS RPC connector. One class serves all K/3 Cloud deployments
  * (V9/V10, standard/enterprise) — release/edition don't change how the
  * RPC behaves, only the SaveForIDE wire format slightly varies (handled
@@ -296,18 +308,10 @@ export class K3CloudConnector implements ErpConnector {
       this.session = res.session;
       return;
     }
-    // CheckPasswordPolicy with isSuccess=false = password HARD-expired
-    // ("用户密码已过期"). K/3 still hands back cookies, but the session is NOT
-    // fully authenticated — every business RPC is then rejected with
-    // "ByRspRetStatusCode N001 Unexpectable request" (issue #7, 2026-06-05
-    // 实证). Treating it as connected silently hands the user a dead session.
-    // Surface it so they reset the password first. (The "expires in N days"
-    // advisory returns isSuccess=true and is handled by the branch above, so
-    // reaching here always means a hard, unusable expiry.)
+    // A policy failure may still return cookies, but must never become a
+    // connected session (issue #7). Successful advisories are handled above.
     if (res.messageCode === 'CheckPasswordPolicy') {
-      throw new Error(
-        `BOS 登录失败：${res.message ?? '用户密码已过期'} — 会话未完成认证，业务操作会被服务端拒绝。请先在金蝶客户端/管理中心重置密码，再重新连接。`,
-      );
+      throw passwordPolicyFailure(res.message);
     }
     // 002099000005374 = "请输入系统验证码" — surface as typed error so the
     // UI layer can fetch the image and prompt the user. The session (with
@@ -364,15 +368,10 @@ export class K3CloudConnector implements ErpConnector {
       this.pendingSession = null;
       return;
     }
-    // CheckPasswordPolicy with isSuccess=false = the CAPTCHA was accepted but
-    // the password is HARD-expired — the session is unauthenticated and every
-    // business RPC would 401 (issue #7). Surface it so the user resets the
-    // password instead of "connecting" a dead session.
+    // Do not infer CAPTCHA acceptance or expiry from a generic policy failure.
     if (res.messageCode === 'CheckPasswordPolicy') {
       this.pendingSession = null;
-      throw new Error(
-        `BOS 登录失败：${res.message ?? '用户密码已过期'} — 验证码已通过但密码已过期，会话未认证。请重置密码后再连接。`,
-      );
+      throw passwordPolicyFailure(res.message);
     }
     // 002099000005375 = "系统验证码输入错误" — refresh + retry.
     // 002099000005373 = "系统验证码不存在,请刷新验证码" — server session
