@@ -18,7 +18,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'k
 const BUNDLE_VERSION = process.env.BUNDLE_VERSION ?? '0.1.0';
 
 async function hashFile(p: string): Promise<string> {
-  return createHash('sha256').update(await fs.readFile(p)).digest('hex');
+  const bytes = await fs.readFile(p);
+  if (bytes.includes(Buffer.from('\r\n'))) {
+    throw new Error(`Knowledge files must use LF line endings before generating the manifest: ${p}`);
+  }
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 async function listSkillFiles(dir: string): Promise<string[]> {
