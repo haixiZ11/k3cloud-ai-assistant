@@ -7,11 +7,24 @@
 .wincap {
   width: 46px; height: 40px;
   display: grid; place-items: center;
+  /* 自带 reset — 不依赖全局 `button`(design-system.css:82)的 background /
+     border / padding。那是一条元素选择器,任何改动都会连带漂移窗口按钮
+     的命中区域与底色;这里显式声明,46×40 就是 Windows 标题栏按钮的
+     标准命中区域。 */
+  padding: 0; border: 0; background: transparent;
   color: var(--ink-2);
   border-radius: 0;
+  /* Windows 标题栏按钮用默认箭头(非手型);user-select 防止双击最大化时选中图标 */
+  cursor: default; user-select: none;
+  transition: background .12s, color .12s;
 }
 .wincap:hover { background: var(--surface-2); }
+.wincap:active { background: var(--border); }
+/* 键盘可达:焦点环向内收,不撑开 40px 高的标题栏 */
+.wincap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .wincap.close:hover { background: #e81123; color: #fff; }
+.wincap.close:active { background: #f1707a; color: #fff; }
+.wincap.close:focus-visible { outline-color: #e81123; }
 
 /* ── Variant switch chip ── */
 .variant-switch {
