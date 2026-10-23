@@ -1,8 +1,7 @@
 /**
  * Rebuild `knowledge/manifest.json` from the on-disk skills tree.
  *
- * Run via `node --experimental-strip-types scripts/gen-knowledge-manifest.ts`
- * (Node 22+) or `pnpm dlx tsx scripts/gen-knowledge-manifest.ts`.
+ * Run via `pnpm knowledge:manifest` using the project's tsx dependency.
  *
  * Each skill's digest covers SKILL.md plus every `.md` under `prompts/`
  * and `references/` — so changes to supporting files are integrity-checked
@@ -18,7 +17,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'k
 const BUNDLE_VERSION = process.env.BUNDLE_VERSION ?? '0.1.0';
 
 async function hashFile(p: string): Promise<string> {
-  return createHash('sha256').update(await fs.readFile(p)).digest('hex');
+  const bytes = await fs.readFile(p);
+  if (bytes.includes(Buffer.from('\r\n'))) {
+    throw new Error(`Knowledge files must use LF line endings before generating the manifest: ${p}`);
+  }
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 async function listSkillFiles(dir: string): Promise<string[]> {

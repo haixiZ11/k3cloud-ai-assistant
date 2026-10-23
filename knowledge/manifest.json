@@ -10,17 +10,17 @@
     {
       "id": "common/systematic-debugging",
       "version": "1.0.0",
-      "sha256": "bb88642976d4095f3deb87115c9e68ab02de3fe346b8a79da85dd853a2fb0566"
+      "sha256": "47f29ec281d1d720f5591b727fcd523c64a7f793d66034e60fba1ac0dc74bbaf"
     },
     {
       "id": "k3cloud/bos-features-index",
       "version": "1.0.0",
-      "sha256": "eb6dfcf79aa716326172c102775521c6697ef962d9b014367ff72b4c6bcc1ffc"
+      "sha256": "586824518e8c55e919d7176690e532d78ccd749bbd4088dd699a56968cc41ae7"
     },
     {
       "id": "k3cloud/dll-plugin-index",
       "version": "1.0.0",
-      "sha256": "b62e6c0ab689beef9e2cceeec3ee5136cfb7be6686dc592cfc3d055038fda018"
+      "sha256": "5b98be5d8970898e0b835438e1dda00412197cb9654d21293732066a121b3dcc"
     },
     {
       "id": "k3cloud/metaobject-creation-index",
@@ -30,27 +30,27 @@
     {
       "id": "k3cloud/product-features-index",
       "version": "1.0.0",
-      "sha256": "8e67a8d76d0256687291cd220323a7eb20479dc4c34b7f125a638e166f16a810"
+      "sha256": "ed2e2325918fc23692ce9616795f709645836c206894a7b7f7560133e78241ae"
     },
     {
       "id": "k3cloud/python-plugin-index",
       "version": "1.0.0",
-      "sha256": "e65e41ef78cc5993cd5d3dd84cfc46e8952c656ef215debf512e88dba2ea25fd"
+      "sha256": "6d242df137185fbee524ba4148d40cc9f01226ee363d182aa49e292a970fdf07"
     },
     {
       "id": "k3cloud/solution-decision-framework",
       "version": "2.0.0",
-      "sha256": "0b36106d1e608ae99e1c42b8223b8f804edbc9b2a4f767c3a81848d29c236e0c"
+      "sha256": "c8fdc780501bf19a7201a849d61c8e2fcb1b48edbdc7490a686195ee9a7669d8"
     },
     {
       "id": "k3cloud/troubleshooting-index",
       "version": "1.0.0",
-      "sha256": "c8739da3f47ae2836551ffeb1d74429069870d070c92c737ab88103bc02b830f"
+      "sha256": "65f9d031ebe0cc0ad72c8adf422beaa52a8cbf2dba1169c7ddb6ffedb2f4d8ca"
     },
     {
       "id": "k3cloud/webapi-index",
       "version": "1.0.0",
-      "sha256": "71267c04bc2ca651ef51f0c6e70351990ef828ce7c86e25ad9c33a902f727099"
+      "sha256": "e52205be9a7562d499c06d98ff821671d806776935af1f063b9e61e6fbaf67cd"
     },
     {
       "id": "system/skill-diagnostic",
