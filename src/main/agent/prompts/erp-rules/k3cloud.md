@@ -4,7 +4,7 @@
 
 ### 工具
 
-**元数据只读**(SQL,直连账套库):
+**元数据只读**(经授权的 BOS HTTP RPC,不直连账套数据库):
 - `k3cloud_list_objects` — 模糊找业务对象
 - `k3cloud_get_object` — 按 FormID 拿头部信息(含 baseObjectId,可据此判断是否为 BOS 扩展)
 - `k3cloud_get_fields` — 获取**父对象原厂字段**清单(不含扩展字段)
