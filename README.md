@@ -71,7 +71,7 @@ Requires Windows 10/11 + an LLM API key.
 
 **Download the installer (recommended)**
 
-[**👉 v0.2.6-alpha installer**](https://github.com/qiaolei227/opendeploy/releases/latest) — grab `OpenDeploy-*-x64-setup.exe` and double-click to install.
+[**👉 v0.2.7-alpha installer**](https://github.com/qiaolei227/opendeploy/releases/latest) — grab `OpenDeploy-*-x64-setup.exe` and double-click to install.
 
 **Local development**
 
@@ -82,7 +82,7 @@ pnpm dev
 
 ## Status
 
-**v0.2.6-alpha released** — Connection-reliability fix (issue #7). When a K/3 account's password is hard-expired, the login returns an advisory that OpenDeploy previously mistook for a successful connection — handing back an *unauthenticated* session whose every metadata/write RPC the server then rejected with a cryptic `401 Forbidden ByRspRetStatusCode -- N001: Unexpectable request` (surfaced even worse as `K/3 RPC body is not valid JSON`). The project showed **已连接 (Connected)** while every action silently failed. This release: (1) treats a hard-expired password as a connect *failure* with a clear "reset the password, then reconnect" message instead of connecting a dead session; (2) detects that server-rejection body and reports the real cause — session not fully authenticated / incomplete login — instead of a misleading JSON-parse error; (3) repairs the login CAPTCHA flow so its image comes from the kdsvc endpoint that writes the code to the *same* server session the login reads (the old `ValidateCode.ashx` path used a separate session, so a correctly-typed code never matched), using the native WPF client type. No ERP-coverage changes from v0.2.5-alpha. Internal preview for BOS customization consultants; features / API / UX may still change.
+**v0.2.7-alpha released** — LLM layer overhaul + chat reliability. (1) Model catalog is now fetched from each provider's `/models` endpoint instead of a hardcoded list, with a custom model-ID field for relays and private gateways; (2) a one-click connectivity test in Settings shows real latency and the actual error; (3) custom OpenAI-compatible endpoints (aihubmix / siliconflow etc.) are supported; (4) fixed Claude multi-turn tool-calling 400 — assistant history missing `tool_use` blocks; (5) fixed the stuck Stop button, IME Enter misfires and the endless spinner on failure, plus throttled streaming render and a copy button on code blocks; (6) new blue theme, text navigation, project quick-switcher and frameless title bar. No ERP-coverage changes from v0.2.6-alpha. Internal preview for BOS customization consultants; features / API / UX may still change.
 
 - Target: Kingdee Cloud Cosmic V9 on-premise (Standard / Enterprise editions; V8 not supported — login protocol differs)
 - Platform: Windows x64 only (macOS / Linux pending user feedback)

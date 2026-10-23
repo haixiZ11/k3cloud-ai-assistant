@@ -70,7 +70,7 @@
 
 **下载安装包(推荐)**
 
-[**👉 v0.2.6-alpha 安装包**](https://github.com/qiaolei227/opendeploy/releases/latest) —— 下载 `OpenDeploy-*-x64-setup.exe` 双击安装。
+[**👉 v0.2.7-alpha 安装包**](https://github.com/qiaolei227/opendeploy/releases/latest) —— 下载 `OpenDeploy-*-x64-setup.exe` 双击安装。
 
 **本地开发**
 
@@ -81,7 +81,7 @@ pnpm dev
 
 ## 当前状态
 
-**v0.2.6-alpha 已发布** —— 连接可靠性修复(issue #7)。当 K/3 账号密码**硬过期**时,登录返回的提示之前被 OpenDeploy 误当成"连接成功",于是拿到一个**未认证的会话**,后续每个元数据 / 写入 RPC 都被服务端拒,报一句很费解的 `401 Forbidden ByRspRetStatusCode -- N001: Unexpectable request`(再被二次包装成更费解的 `K/3 RPC body is not valid JSON`)。结果项目显示**已连接**,但每个操作都静默失败。本次:(1) 把硬过期密码当作连接**失败**,给出明确的"请重置密码后再连接"提示,而不是连上一个死会话;(2) 识别这种服务端拒绝报文,报出真因——会话未完整认证 / 登录不完整——不再误报 JSON 解析错误;(3) 修好登录验证码流程:验证码图改从把码写进**登录所读的同一个服务端 session** 的 kdsvc 端点取(旧的 `ValidateCode.ashx` 用的是另一套 session,输对了码也对不上),并改用原生 WPF 客户端类型。相对 v0.2.5-alpha 无 ERP 覆盖面变化。前序: v0.2.5-alpha (Token Plan) → v0.2.4-alpha → v0.2.3-alpha → v0.2.2-alpha → v0.2.1-alpha → v0.2.0-alpha。面向 BOS 二开顾问的内部预览版, 功能 / API / UX 仍可能变动。
+**v0.2.7-alpha 已发布** —— LLM 层升级 + 对话可靠性修复。本次:(1) 模型列表改为从各服务商 `/models` 端点自动拉取,不再硬编码,并支持手工填自定义模型 ID(兼容中转站 / 私有网关);(2) 设置页一键连通性测试,直接看到真实延迟和错误原因;(3) 支持自定义 OpenAI 兼容服务(aihubmix / siliconflow 等);(4) 修 Claude 多轮工具调用 400 —— assistant 历史缺少 `tool_use` 块回放;(5) 修「停止」按钮失灵、输入法回车误发、请求失败后一直转圈,并做了流式渲染节流 + 代码块一键复制;(6) 蓝色主题、导航文字化、项目快捷切换器、沉浸式标题栏。相对 v0.2.6-alpha 无 ERP 覆盖面变化。前序: v0.2.6-alpha (连接可靠性) → v0.2.5-alpha (Token Plan) → v0.2.4-alpha → v0.2.3-alpha → v0.2.2-alpha → v0.2.1-alpha → v0.2.0-alpha。面向 BOS 二开顾问的内部预览版, 功能 / API / UX 仍可能变动。
 
 - 目标: 金蝶云星空 V9 私有部署版(标准版 / 企业版,V8 暂不兼容 —— 登录协议差异)
 - 平台: 仅 Windows x64(macOS / Linux 视用户反馈)
