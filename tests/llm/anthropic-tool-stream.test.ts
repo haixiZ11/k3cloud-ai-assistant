@@ -171,6 +171,41 @@ describe('Anthropic streamed tool inputs', () => {
     expect(capture.onClose).toHaveBeenCalledOnce();
   });
 
+  it.each(['capture-close', 'first-tool'])(
+    'does not dispatch queued tools after cancellation during %s', async (cancelAt) => {
+      const controller = new AbortController();
+      const fetchImpl = vi.fn(async () => response([
+        start(0, 'first'), stop(0), start(1, 'second'), stop(1), ...finish(),
+      ]));
+      const execute = vi.fn(async () => {
+        controller.abort();
+        return 'first completed';
+      });
+      const tools = new ToolRegistry();
+      tools.register({
+        parallelSafe: false,
+        definition: { name: 'echo', description: '', parameters: { type: 'object', properties: {} } },
+        execute,
+      });
+      const events: Array<{ type: string; isError?: boolean }> = [];
+      const messages = await runAgentLoop({
+        client: createAnthropicClient({ baseUrl: 'https://example.test', defaultModel: 'test', fetchImpl }),
+        tools, providerId: 'claude', initialMessages: [], maxIterations: 2,
+        signal: controller.signal, onEvent: (event) => events.push(event),
+        rawCaptureFactory: () => ({
+          onRequest: vi.fn(), onChunk: vi.fn(),
+          onClose: async () => { if (cancelAt === 'capture-close') controller.abort(); },
+        }),
+      });
+      expect(execute).toHaveBeenCalledTimes(cancelAt === 'capture-close' ? 0 : 1);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId)).toEqual(['first', 'second']);
+      expect(messages.at(-1)?.content).toBe('Tool call cancelled before execution.');
+      expect(events.filter((e) => e.type === 'tool_result').at(-1)?.isError).toBe(true);
+      expect(events.at(-1)?.type).toBe('done');
+    },
+  );
+
   it('turns a transport failure into an error and closes capture', async () => {
     const client = createAnthropicClient({ baseUrl: 'https://example.test', defaultModel: 'test',
       fetchImpl: async () => new Response(new ReadableStream({
