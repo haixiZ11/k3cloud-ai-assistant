@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,7 +23,7 @@ afterEach(async () => {
 });
 
 function generate() {
-  return spawnSync(process.execPath, ['--experimental-strip-types', join(root, 'scripts/generate.ts')], {
+  return spawnSync(process.execPath, [createRequire(import.meta.url).resolve('tsx/cli'), join(root, 'scripts/generate.ts')], {
     encoding: 'utf8', env: { ...process.env, BUNDLE_VERSION: 'test-version' },
   });
 }

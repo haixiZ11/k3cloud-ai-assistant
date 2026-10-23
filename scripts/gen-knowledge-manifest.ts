@@ -1,8 +1,7 @@
 /**
  * Rebuild `knowledge/manifest.json` from the on-disk skills tree.
  *
- * Run via `node --experimental-strip-types scripts/gen-knowledge-manifest.ts`
- * (Node 22+) or `pnpm dlx tsx scripts/gen-knowledge-manifest.ts`.
+ * Run via `pnpm knowledge:manifest` using the project's tsx dependency.
  *
  * Each skill's digest covers SKILL.md plus every `.md` under `prompts/`
  * and `references/` — so changes to supporting files are integrity-checked
