@@ -195,6 +195,12 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
     const toolEnds: number[] = toolCalls.map(() => 0);
     const wrap = (idx: number, tc: ToolCall) => {
       toolStarts[idx] = Date.now();
+      // Cancellation can arrive after stream completion or between serial calls.
+      // Keep a result for every queued call so resumed history stays paired.
+      if (params.signal?.aborted) {
+        toolEnds[idx] = Date.now();
+        return Promise.resolve({ content: 'Tool call cancelled before execution.', isError: true });
+      }
       return params.tools.execute(tc.name, tc.arguments).then((r) => {
         toolEnds[idx] = Date.now();
         return r;
@@ -244,6 +250,10 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
       llmElapsedMs,
       totalElapsedMs: Date.now() - turnStart
     });
+    if (params.signal?.aborted) {
+      emit({ type: 'done' });
+      return messages;
+    }
   }
 
   // Soft cap reached. Don't throw — that surfaces as a red error and the user
