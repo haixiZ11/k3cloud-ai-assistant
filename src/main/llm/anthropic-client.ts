@@ -2,6 +2,7 @@ import type { ChatRequest, StreamEvent } from '@shared/llm-types';
 import type { LlmClient } from './types';
 import { resolveStreamOpts } from './types';
 import { parseSseStream } from './sse';
+import { AnthropicToolStream } from './anthropic-tool-stream';
 
 interface AnthropicOpts {
   baseUrl: string;
@@ -153,48 +154,91 @@ export function createAnthropicClient(opts: AnthropicOpts): LlmClient {
       let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
       let inputTokens = 0;
       let outputTokens = 0;
+      const tools = new AnthropicToolStream();
 
-      for await (const dataStr of parseSseStream(stream)) {
-        rawCapture?.onChunk(dataStr);
-        let data: any;
-        try { data = JSON.parse(dataStr); } catch { continue; }
-
-        if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
-          yield { type: 'delta', content: data.delta.text ?? '' };
-        } else if (data.type === 'content_block_delta' && data.delta?.type === 'thinking_delta') {
-          // Extended-thinking text chunks (Opus 4.7 adaptive / Sonnet 4.6
-          // extended). Parallel to text_delta but streamed into a separate
-          // `thinking` content block. Caller must persist + replay.
-          yield { type: 'reasoning_delta', content: data.delta.thinking ?? '' };
-        } else if (data.type === 'content_block_delta' && data.delta?.type === 'signature_delta') {
-          // Signature emitted at the end of a thinking block. Must be
-          // round-tripped verbatim with the thinking text, otherwise Claude
-          // rejects the multi-turn continuation.
-          yield { type: 'reasoning_signature', signature: data.delta.signature ?? '' };
-        } else if (data.type === 'message_delta') {
-          const sr = data.delta?.stop_reason;
-          if (sr === 'tool_use') finishReason = 'tool_calls';
-          else if (sr === 'max_tokens') finishReason = 'length';
-          else finishReason = 'stop';
-          if (data.usage?.output_tokens) {
-            outputTokens = data.usage.output_tokens;
-            yield { type: 'usage', outputTokens };
+      try {
+        for await (const dataStr of parseSseStream(stream)) {
+          if (signal?.aborted) {
+            yield { type: 'error', error: 'Claude stream was cancelled.' };
+            return;
           }
-        } else if (data.type === 'message_start') {
-          inputTokens = data.message?.usage?.input_tokens ?? 0;
-        } else if (data.type === 'message_stop') {
-          yield {
-            type: 'done',
-            finishReason,
-            usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }
-          };
-          await rawCapture?.onClose();
-          return;
+          rawCapture?.onChunk(dataStr);
+          let data: any;
+          try { data = JSON.parse(dataStr); } catch {
+            yield { type: 'error', error: 'Claude stream contains an invalid JSON event.' };
+            return;
+          }
+          if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            yield { type: 'error', error: 'Claude stream contains an invalid event.' };
+            return;
+          }
+          try { tools.accept(data); } catch (err) {
+            yield { type: 'error', error: (err as Error).message };
+            return;
+          }
+
+          if (data.type === 'error') {
+            yield { type: 'error', error: 'Claude stream reported an error.' };
+            return;
+          } else if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+            yield { type: 'delta', content: data.delta.text ?? '' };
+          } else if (data.type === 'content_block_delta' && data.delta?.type === 'thinking_delta') {
+            // Extended-thinking text chunks (Opus 4.7 adaptive / Sonnet 4.6
+            // extended). Parallel to text_delta but streamed into a separate
+            // `thinking` content block. Caller must persist + replay.
+            yield { type: 'reasoning_delta', content: data.delta.thinking ?? '' };
+          } else if (data.type === 'content_block_delta' && data.delta?.type === 'signature_delta') {
+            // Signature emitted at the end of a thinking block. Must be
+            // round-tripped verbatim with the thinking text, otherwise Claude
+            // rejects the multi-turn continuation.
+            yield { type: 'reasoning_signature', signature: data.delta.signature ?? '' };
+          } else if (data.type === 'message_delta') {
+            const sr = data.delta?.stop_reason;
+            if (sr === 'tool_use') finishReason = 'tool_calls';
+            else if (sr === 'max_tokens') finishReason = 'length';
+            else if (sr != null) finishReason = 'stop';
+            if (data.usage?.output_tokens) {
+              outputTokens = data.usage.output_tokens;
+              yield { type: 'usage', outputTokens };
+            }
+          } else if (data.type === 'message_start') {
+            inputTokens = data.message?.usage?.input_tokens ?? 0;
+          } else if (data.type === 'message_stop') {
+            if (tools.hasTools || finishReason === 'tool_calls') {
+              if (finishReason !== 'tool_calls' || !tools.hasTools) {
+                yield { type: 'error', error: 'Claude tool turn ended without a complete tool_use response.' };
+                return;
+              }
+              let calls;
+              try { calls = tools.finish(); } catch (err) {
+                yield { type: 'error', error: (err as Error).message };
+                return;
+              }
+              for (const toolCall of calls) {
+                if (signal?.aborted) break;
+                yield { type: 'tool_call', toolCall };
+              }
+            }
+            if (signal?.aborted) {
+              yield { type: 'error', error: 'Claude stream was cancelled.' };
+              return;
+            }
+            yield {
+              type: 'done',
+              finishReason,
+              usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }
+            };
+            return;
+          }
         }
+        yield { type: 'error', error: 'Claude stream ended before message_stop.' };
+      } catch {
+        yield { type: 'error', error: 'Claude stream was interrupted before completion.' };
+      } finally {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+        await rawCapture?.onClose();
       }
-      // Stream ended without a `message_stop` event (rare — connection cut?).
-      // Still flush the capture so we don't leak the buffered chunks.
-      await rawCapture?.onClose();
     }
   };
 }

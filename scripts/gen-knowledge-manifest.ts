@@ -1,8 +1,7 @@
 /**
  * Rebuild `knowledge/manifest.json` from the on-disk skills tree.
  *
- * Run via `node --experimental-strip-types scripts/gen-knowledge-manifest.ts`
- * (Node 22+) or `pnpm dlx tsx scripts/gen-knowledge-manifest.ts`.
+ * Run via `pnpm knowledge:manifest` using the project's tsx dependency.
  *
  * Each skill's digest covers SKILL.md plus every `.md` under `prompts/`
  * and `references/` — so changes to supporting files are integrity-checked
@@ -18,18 +17,28 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'k
 const BUNDLE_VERSION = process.env.BUNDLE_VERSION ?? '0.1.0';
 
 /**
- * SHA-256 of a skill content file, normalized to LF line endings.
+ * SHA-256 of a skill content file. Rejects CRLF instead of hashing it.
  *
- * MUST stay byte-for-byte identical in effect to `hashNormalizedFile` in
- * `src/main/skills/integrity.ts` — the manifest written here is what the
- * runtime `verifyIntegrity` checks against, so a divergence between the two
- * makes every bundled skill report as tampered. Normalizing keeps the digest
- * independent of checkout line endings (Windows `core.autocrlf=true` writes
- * CRLF, which would otherwise flip every digest).
+ * .gitattributes pins every .md under knowledge/ to eol=lf, so a checkout must
+ * be LF here. A CRLF file means the working tree diverged from what the repo
+ * promises (stale checkout, core.autocrlf=true without re-normalization) --
+ * hashing it would write a digest only this machine can reproduce, so fail
+ * loudly and point at the fix.
+ *
+ * The runtime counterpart hashNormalizedFile in src/main/skills/integrity.ts
+ * strips CRLF before hashing as a safety net for end users (they get whatever
+ * bytes shipped in the asar). With LF input both produce the same digest, so
+ * the manifest written here still verifies there.
  */
 async function hashFile(p: string): Promise<string> {
-  const text = await fs.readFile(p, 'utf8');
-  return createHash('sha256').update(text.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+  const bytes = await fs.readFile(p);
+  if (bytes.includes(Buffer.from('\r\n'))) {
+    throw new Error(
+      `Knowledge files must use LF line endings before generating the manifest: ${p}\n` +
+        'Fix: git add --renormalize knowledge/ (or set core.autocrlf=input), then re-run pnpm knowledge:manifest.'
+    );
+  }
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 async function listSkillFiles(dir: string): Promise<string[]> {

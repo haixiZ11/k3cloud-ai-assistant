@@ -520,7 +520,7 @@ describe('runAgentLoop abort (stop button regression)', () => {
       const finalMessages = await Promise.race([loop, timeout]);
       const last = finalMessages[finalMessages.length - 1];
       expect(last.role).toBe('tool');
-      expect(last.content).toContain('已停止');
+      expect(last.content).toContain('cancelled before execution');
       // 配对完整:assistant(tool_calls) 之后必须跟 tool 结果,下轮回放才合法
       expect(finalMessages[finalMessages.length - 2].toolCalls).toHaveLength(1);
       expect(events.some((e) => e.type === 'done')).toBe(true);

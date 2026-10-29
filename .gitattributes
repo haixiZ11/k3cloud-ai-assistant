@@ -1,0 +1,4 @@
+# Knowledge manifests verify exact bytes. Keep checkout bytes identical on
+# Windows and Unix; regenerate with pnpm knowledge:manifest after content edits.
+knowledge/**/*.md text eol=lf
+knowledge/manifest.json text eol=lf

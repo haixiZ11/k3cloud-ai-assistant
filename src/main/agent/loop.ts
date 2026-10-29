@@ -206,6 +206,12 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
     const toolEnds: number[] = toolCalls.map(() => 0);
     const wrap = (idx: number, tc: ToolCall) => {
       toolStarts[idx] = Date.now();
+      // Cancellation can arrive after stream completion or between serial calls.
+      // Keep a result for every queued call so resumed history stays paired.
+      if (params.signal?.aborted) {
+        toolEnds[idx] = Date.now();
+        return Promise.resolve<ToolResult>({ toolCallId: tc.id, content: 'Tool call cancelled before execution.', isError: true });
+      }
       return params.tools.execute(tc.name, tc.arguments).then((r) => {
         toolEnds[idx] = Date.now();
         return r;
@@ -249,7 +255,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
       if (!results[i]) {
         results[i] = {
           toolCallId: '',
-          content: '（用户已停止,本次工具调用未执行或被中断）',
+          content: 'Tool call cancelled before execution.',
           isError: true
         };
         toolEnds[i] = toolStarts[i]; // trace 时长归零,避免负数
@@ -295,7 +301,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<Message[
 
     // 停止发生在工具阶段:补完 tool 结果后就此收尾 — 不再带着已 abort 的
     // signal 发起下一轮 LLM 请求(那会被立刻拒绝并误报成错误横幅)。
-    if (signal?.aborted) {
+    if (params.signal?.aborted) {
       emit({ type: 'done' });
       return messages;
     }
