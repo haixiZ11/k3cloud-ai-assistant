@@ -70,7 +70,7 @@
 
 **下载安装包(推荐)**
 
-[**👉 v0.2.7-alpha 安装包**](https://github.com/qiaolei227/opendeploy/releases/latest) —— 下载 `OpenDeploy-*-x64-setup.exe` 双击安装。
+[**👉 v0.2.8-alpha 安装包**](https://github.com/qiaolei227/opendeploy/releases/latest) —— 下载 `OpenDeploy-*-x64-setup.exe` 双击安装。
 
 **本地开发**
 
@@ -81,7 +81,7 @@ pnpm dev
 
 ## 当前状态
 
-**v0.2.7-alpha 已发布** —— LLM 层升级 + 对话可靠性修复。本次:(1) 模型列表改为从各服务商 `/models` 端点自动拉取,不再硬编码,并支持手工填自定义模型 ID(兼容中转站 / 私有网关);(2) 设置页一键连通性测试,直接看到真实延迟和错误原因;(3) 支持自定义 OpenAI 兼容服务(aihubmix / siliconflow 等);(4) 修 Claude 多轮工具调用 400 —— assistant 历史缺少 `tool_use` 块回放;(5) 修「停止」按钮失灵、输入法回车误发、请求失败后一直转圈,并做了流式渲染节流 + 代码块一键复制;(6) 蓝色主题、导航文字化、项目快捷切换器、沉浸式标题栏。相对 v0.2.6-alpha 无 ERP 覆盖面变化。前序: v0.2.6-alpha (连接可靠性) → v0.2.5-alpha (Token Plan) → v0.2.4-alpha → v0.2.3-alpha → v0.2.2-alpha → v0.2.1-alpha → v0.2.0-alpha。面向 BOS 二开顾问的内部预览版, 功能 / API / UX 仍可能变动。
+**v0.2.8-alpha 已发布** —— 同步上游 + 流式工具调用补全。本次合并上游 qiaolei227/opendeploy 10-24 的 8 个提交:(1) Claude 流式 tool call 改为整轮缓冲后再落历史,遇到截断 / 畸形调用直接废弃整轮,不再执行半个工具调用;(2) BOS 登录不再从 `CheckPasswordPolicy` 推断「密码过期」,保留服务端原话,坏凭据仍是未连接状态(issue #13);(3) 取消后跳过队列中的工具,同时保证 tool_use / tool_result 配对完整、后续会话可回放;(4) 知识库清单跨平台字节可复现(`.gitattributes` 钉 LF、生成器拒绝 CRLF),运行时哈希归一化作为 Windows 检出环境的兜底保留。83 test files / 994 tests 全绿,typecheck + lint 干净。前序: v0.2.7-alpha (LLM 层升级 + 对话可靠性) → v0.2.6-alpha (连接可靠性) → v0.2.5-alpha (Token Plan) → v0.2.4 → v0.2.3 → v0.2.2 → v0.2.1 → v0.2.0。面向 BOS 二开顾问的内部预览版, 功能 / API / UX 仍可能变动。
 
 - 目标: 金蝶云星空 V9 私有部署版(标准版 / 企业版,V8 暂不兼容 —— 登录协议差异)
 - 平台: 仅 Windows x64(macOS / Linux 视用户反馈)

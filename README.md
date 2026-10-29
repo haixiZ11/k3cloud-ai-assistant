@@ -71,7 +71,7 @@ Requires Windows 10/11 + an LLM API key.
 
 **Download the installer (recommended)**
 
-[**👉 v0.2.7-alpha installer**](https://github.com/qiaolei227/opendeploy/releases/latest) — grab `OpenDeploy-*-x64-setup.exe` and double-click to install.
+[**👉 v0.2.8-alpha installer**](https://github.com/qiaolei227/opendeploy/releases/latest) — grab `OpenDeploy-*-x64-setup.exe` and double-click to install.
 
 **Local development**
 
@@ -82,7 +82,7 @@ pnpm dev
 
 ## Status
 
-**v0.2.7-alpha released** — LLM layer overhaul + chat reliability. (1) Model catalog is now fetched from each provider's `/models` endpoint instead of a hardcoded list, with a custom model-ID field for relays and private gateways; (2) a one-click connectivity test in Settings shows real latency and the actual error; (3) custom OpenAI-compatible endpoints (aihubmix / siliconflow etc.) are supported; (4) fixed Claude multi-turn tool-calling 400 — assistant history missing `tool_use` blocks; (5) fixed the stuck Stop button, IME Enter misfires and the endless spinner on failure, plus throttled streaming render and a copy button on code blocks; (6) new blue theme, text navigation, project quick-switcher and frameless title bar. No ERP-coverage changes from v0.2.6-alpha. Internal preview for BOS customization consultants; features / API / UX may still change.
+**v0.2.8-alpha released** — Upstream sync + streaming tool-call completeness. This release merges qiaolei227/opendeploy's 10-24 batch: (1) Claude streamed tool calls are now buffered per turn and replayed with their history — a truncated or malformed call drops the whole turn instead of executing half a call; (2) BOS login no longer infers “password expired” from `CheckPasswordPolicy`, the server's own message is preserved and bad credentials still stay disconnected (issue #13); (3) queued tools are skipped after cancellation while keeping tool_use/tool_result pairing intact for replay; (4) knowledge manifests are byte-reproducible across platforms (`.gitattributes` pins LF, the generator rejects CRLF), with the runtime hash normalization kept as a safety net for Windows checkouts. 83 test files / 994 tests green, typecheck + lint clean. Internal preview for BOS customization consultants; features / API / UX may still change.
 
 - Target: Kingdee Cloud Cosmic V9 on-premise (Standard / Enterprise editions; V8 not supported — login protocol differs)
 - Platform: Windows x64 only (macOS / Linux pending user feedback)

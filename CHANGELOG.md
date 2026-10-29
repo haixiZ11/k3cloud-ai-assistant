@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## v0.2.8-alpha (2026-10-29)
+
+本版合并上游 `qiaolei227/opendeploy` 10-24 的 8 个提交(3 个 PR + 5 个 fix),并保留本地独有的知识库与运行时修复。
+
+### LLM 层
+- **Claude 流式 tool call 补全 + 历史回放** —— 新增 `AnthropicToolStream`,先缓冲完整一轮再落 history;遇到截断/畸形调用直接废弃整轮,不再执行半个工具调用后再拼历史。补 187 行流式测试 + 114 行回放测试。
+
+### ERP / BOS
+- **登录失败不再推断「密码过期」** —— `CheckPasswordPolicy` 统一走 `passwordPolicyFailure()`,保留服务端原话。坏凭据也会返回这个码,原来的"请重置密码"提示会误导(issue #13);失败的登录仍然保持未连接,不会拿到死会话。补 158 行登录测试。
+
+### Agent
+- **取消后跳过队列中的工具** —— `signal.aborted` 时给每个排队调用补一条 `Tool call cancelled before execution.` 结果,保证 assistant(tool_use) → tool 配对完整、后续会话可回放。取消文案与上游统一(原中文版改为英文)。
+
+### 知识库
+- **清单跨平台可复现** —— 新增 `.gitattributes` 把 `knowledge/**/*.md` 与 `manifest.json` 钉在 `eol=lf`;生成器遇到 CRLF 直接报错并提示 `git add --renormalize`。
+- **运行时兜底(本地保留)** —— `integrity.ts` 的 `hashNormalizedFile` 哈希前先做 `\r\n → \n` 归一化。上游只做了源头治理没动这里,Windows 下 `core.autocrlf=true` 时装包内文件仍可能被判成篡改,所以两层都留下。
+- `knowledge:manifest` 脚本改用项目自带的 `tsx`,不再依赖 `node --experimental-strip-types`。
+- 重新生成清单:13 个 skill(含本地独有的 `k3cloud/dev-standard-index`、`system/llm-provider-layer`),已逐个核对与运行时算法一致。
+
+### 测试
+83 test files / 994 tests 全绿,typecheck + lint 干净。
+
+---
+
 ## v0.2.7-alpha (2026-10-22)
 
 ### LLM 层
