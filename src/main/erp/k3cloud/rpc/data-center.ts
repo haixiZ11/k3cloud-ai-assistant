@@ -57,8 +57,11 @@ interface RawDataCenter {
  * legitimate result for a freshly-installed K/3 Cloud server with no
  * data-centers configured yet.
  */
-export async function getDataCenterList(baseUrl: string): Promise<DataCenter[]> {
-  const session: KdSession = { baseUrl };
+export async function getDataCenterList(
+  baseUrl: string,
+  options?: { diagnosticPrivacy?: boolean },
+): Promise<DataCenter[]> {
+  const session: KdSession = { baseUrl, diagnosticPrivacy: options?.diagnosticPrivacy };
   const res = await callKdsvc(session, ACCOUNT_SERVICE, 'GetDataCenterList', {
     apFields: {},
   });

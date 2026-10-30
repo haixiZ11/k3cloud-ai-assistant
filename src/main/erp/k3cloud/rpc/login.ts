@@ -46,6 +46,8 @@ export interface LoginCredentials {
 export interface LoginResult {
   session: KdSession;
   isSuccess: boolean;
+  /** Numeric result from this exact authentication attempt; never an extra probe. */
+  loginResultType?: number;
   /** Set when Login succeeds. */
   userId?: number;
   /** Internal name (e.g. "demo"). */
@@ -115,7 +117,7 @@ export async function login(
     session.obfuscatedKey = obfuscatedKey;
   }
   const cookedPassword = cipherPasswordForLogin(creds.password, obfuscatedKey);
-  void logger.info(
+  if (!session.diagnosticPrivacy) void logger.info(
     `ValidateLoginInfo request | aspSess=${session.aspNetSessionId ? session.aspNetSessionId.slice(0, 8) + '…' : '(none)'} ` +
       `kdSess=${session.kdServiceSessionId ? session.kdServiceSessionId.slice(0, 8) + '…' : '(none)'} ` +
       `withValidationCode=${opts?.validationCode ? 'yes' : 'no'}`,
@@ -224,7 +226,7 @@ export async function login(
   // (CAPTCHA, wrong password, account-set mismatch) are debuggable from
   // app.log alone. Success cases are short — keep them too for completeness.
   const msgSnippet = (parsed.Message ?? '').slice(0, 80);
-  void logger.info(
+  if (!session.diagnosticPrivacy) void logger.info(
     `ValidateLoginInfo result | loginResultType=${parsed.LoginResultType} ` +
       `messageCode=${parsed.MessageCode ?? '(none)'} ` +
       `message="${msgSnippet}" ` +
@@ -234,6 +236,8 @@ export async function login(
   return {
     session,
     isSuccess: parsed.LoginResultType === 1,
+    loginResultType: typeof parsed.LoginResultType === 'number' && Number.isSafeInteger(parsed.LoginResultType)
+      ? parsed.LoginResultType : undefined,
     userId: parsed.Context?.UserId,
     userName: parsed.Context?.UserName,
     customName: parsed.Context?.CustomName,

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Kingdee.BOS.ServiceFacade.Common</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile the production helper against a synthetic vendor type. No BOS DLLs. -->
+    <Compile Include="../../../../bos-bridge/BosContext.FlatShake.cs" Link="BosContext.FlatShake.cs" />
+  </ItemGroup>
+</Project>

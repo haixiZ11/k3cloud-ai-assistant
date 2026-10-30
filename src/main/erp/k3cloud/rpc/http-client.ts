@@ -26,6 +26,8 @@ import { createLogger } from '../../../logger';
 const logger = createLogger('erp/k3cloud/http');
 
 export interface KdSession {
+  /** Suppress raw RPC logs for shareable login diagnostics (including failures). */
+  diagnosticPrivacy?: boolean;
   /** K/3 Cloud Web Server root, e.g. "http://localhost/k3cloud". No trailing slash. */
   baseUrl: string;
   /** ASP.NET_SessionId cookie value. */
@@ -202,7 +204,7 @@ export async function callKdsvc(
     // the caught Error retains only the host, so without this line a support
     // bundle can't tell which endpoint failed when multiple were in flight.
     const code = extractTransportCode((err as { cause?: unknown })?.cause) ?? 'unknown';
-    void logger.error(
+    if (!session.diagnosticPrivacy) void logger.error(
       `${serviceName}.${methodName} transport failed | url=${url} | code=${code}`,
       err instanceof Error ? err : undefined,
     );
@@ -223,7 +225,7 @@ export async function callKdsvc(
   // surfaces the actual server message via the thrown Error.
   const trimmed = bodyText.trim();
   if (trimmed.startsWith('response_error:') || trimmed.startsWith('"response_error:')) {
-    void logger.warn(
+    if (!session.diagnosticPrivacy) void logger.warn(
       `${serviceName}.${methodName} response_error | url=${url} | status=${res.status} | body=${trimmed.slice(0, 300)}`,
     );
     throw new BosResponseError(
@@ -236,7 +238,7 @@ export async function callKdsvc(
   // text body, NOT a response_error envelope. Catch the signature here so it
   // doesn't masquerade as a downstream JSON-parse failure.
   if (isServerRejectionBody(trimmed)) {
-    void logger.warn(
+    if (!session.diagnosticPrivacy) void logger.warn(
       `${serviceName}.${methodName} request rejected (session not authenticated?) | url=${url} | status=${res.status} | body=${trimmed.slice(0, 300)}`,
     );
     throw new BosRequestRejectedError(
@@ -251,7 +253,10 @@ export async function callKdsvc(
   // 4xx/5xx without the response_error envelope — server reached, but rejected
   // before BOS layer. Helpful when reverse-proxy / IIS intercepts the request.
   if (res.status >= 400) {
-    void logger.warn(
+    // A diagnostic must not label a failed HTTP exchange as accepted, even if
+    // a proxy/server embeds a success-shaped body. Do not include that body.
+    if (session.diagnosticPrivacy) throw new Error('Diagnostic RPC HTTP failure');
+    if (!session.diagnosticPrivacy) void logger.warn(
       `${serviceName}.${methodName} http ${res.status} | url=${url} | body=${trimmed.slice(0, 300)}`,
     );
   }
