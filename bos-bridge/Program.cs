@@ -57,9 +57,9 @@ namespace OpenDeploy.BosBridge
                     Console.WriteLine(value);
                     return 0;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    LogStderr($"flatshake_failed: {Unwrap(ex).GetType().Name}: {Unwrap(ex).Message}");
+                    LogStderr("flatshake_failed: checksum unavailable; details withheld");
                     return 2;
                 }
             }

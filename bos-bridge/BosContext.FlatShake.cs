@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Reflection;
-using System.Text;
 
 namespace OpenDeploy.BosBridge
 {
@@ -32,7 +31,7 @@ namespace OpenDeploy.BosBridge
         /// <summary>
         /// Compute the `pvfgsdhsfg` request-header value for the given
         /// FlatShake version by driving the vendor's registered checksum
-        /// handler (most faithful). Falls back to GenCheckSumCodeDynLen_TwoSix.
+        /// handler. Missing or unusable negotiated versions fail closed.
         /// </summary>
         /// <param name="data">target payload (request body / ap fields).</param>
         /// <param name="hashingAlgoType">e.g. "SHA256".</param>
@@ -54,16 +53,13 @@ namespace OpenDeploy.BosBridge
             if (handlersField?.GetValue(null) is IDictionary dict && dict.Contains(vn))
             {
                 var handler = dict[vn];
-                var invoke = handler.GetType().GetMethod("Invoke");
+                var invoke = handler?.GetType().GetMethod("Invoke");
                 var result = invoke?.Invoke(handler, new object?[] { data, hashingAlgoType, timestamp, nonce, ccsDt, vn });
-                if (result is string s) return s;
+                if (result is string s && !string.IsNullOrWhiteSpace(s)) return s;
             }
 
-            // Fallback: direct static call.
-            var gen = type.GetMethod("GenCheckSumCodeDynLen_TwoSix", flags)
-                ?? throw new InvalidOperationException("GenCheckSumCodeDynLen_TwoSix not found");
-            var direct = gen.Invoke(null, new object?[] { data, hashingAlgoType, timestamp, nonce, ccsDt });
-            return direct as string ?? throw new InvalidOperationException("GenCheckSumCodeDynLen_TwoSix returned null");
+            // A 2.6 checksum is not evidence of compatibility with another version.
+            throw new InvalidOperationException("Negotiated FlatShake handler unavailable or invalid.");
         }
     }
 }
