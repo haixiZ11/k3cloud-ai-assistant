@@ -6,6 +6,7 @@ import { SettingsPage } from '../../src/renderer/pages/SettingsPage';
 import { WizardPage } from '../../src/renderer/pages/WizardPage';
 import { useSettingsStore } from '../../src/renderer/stores/settings-store';
 import { DEFAULT_SETTINGS, type AppSettings } from '../../src/shared/types';
+import { PROVIDER_BY_ID } from '../../src/renderer/data/providers';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -82,16 +83,42 @@ async function blur(element: HTMLElement) {
   );
 }
 async function provider(id: string) {
-  await act(async () =>
-    (
-      host
-        .querySelector(`.prov-dot.${id}`)!
-        .closest('.prov-card') as HTMLElement
-    ).click(),
-  );
+  const cards = Array.from(host.querySelectorAll<HTMLElement>('.prov-card'));
+  const target = cards.find((card) => card.querySelector('.prov-title')?.textContent?.includes(PROVIDER_BY_ID[id].label));
+  expect(target, id).toBeTruthy();
+  await act(async () => target!.click());
 }
 
 describe('Settings connection snapshot', () => {
+  it.each([
+    ['deepseek', 'navigation', false], ['deepseek', 'navigation', true],
+    ['deepseek', 'provider', false], ['deepseek', 'provider', true],
+    ['custom-openai', 'navigation', false], ['custom-openai', 'navigation', true],
+    ['custom-openai', 'provider', false], ['custom-openai', 'provider', true],
+  ] as const)('reconciles a late model save after returning to %s via %s (dirty=%s)', async (providerId, route, dirty) => {
+    await settingsPage({
+      llmProvider: providerId,
+      apiKeys: { deepseek: 'synthetic-key' },
+      customOpenAI: { baseUrl: 'https://synthetic.test/v1', model: 'synthetic-initial', apiKey: 'synthetic-key' },
+    });
+    const modelInput = () => host.querySelector<HTMLInputElement>('input[list="custom-openai-model-list"], input[placeholder="settings.customModelLabel"]')!;
+    const saving = deferred<void>();
+    api.saveSettings.mockReturnValueOnce(saving.promise);
+    await input(modelInput(), 'synthetic-model-A');
+    await blur(modelInput());
+    if (route === 'navigation') {
+      await click('settings.sectionAppearance');
+      await click('settings.sectionLlm');
+    } else {
+      await provider('claude');
+      await provider(providerId);
+    }
+    if (dirty) await input(modelInput(), 'synthetic-model-B');
+    await act(async () => saving.resolve());
+    expect(modelInput().value).toBe(dirty ? 'synthetic-model-B' : 'synthetic-model-A');
+    await click('settings.testConnection');
+    expect(api.llmTestConnection).toHaveBeenLastCalledWith(expect.objectContaining({ model: dirty ? 'synthetic-model-B' : 'synthetic-model-A' }));
+  });
   it.each(['deepseek', 'custom-openai'])('preserves a newer model draft during slow persistence for %s', async (providerId) => {
     await settingsPage({
       llmProvider: providerId,

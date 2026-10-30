@@ -212,21 +212,31 @@ function LlmSection() {
     return stored && !inCatalog ? stored : '';
   });
 
-  // Re-resolve when provider changes (selectedProviderId mutates as user clicks cards)
+  const modelDraft = useRef({ providerId: selectedProviderId, dirty: false, value: '' });
+
+  // A pristine/reopened view follows saved settings. A newer local draft only
+  // accepts an acknowledgement for that same value, never an older save.
   useEffect(() => {
-    // Persistence acknowledgements may belong to an older draft. Only switching
-    // provider reloads the model; a slow save must never overwrite newer input.
-    const latest = useSettingsStore.getState().settings;
-    const m = resolveActiveModel(selectedProviderId, latest.modelByProvider);
+    const stored = selectedProviderId === 'custom-openai'
+      ? settings.customOpenAI?.model
+      : settings.modelByProvider?.[selectedProviderId];
+    const draft = modelDraft.current;
+    if (draft.providerId === selectedProviderId && draft.dirty && draft.value.trim() !== stored) return;
+    modelDraft.current = { providerId: selectedProviderId, dirty: false, value: stored ?? '' };
+    const m = resolveActiveModel(selectedProviderId, settings.modelByProvider);
     setSelectedModelId(m?.id ?? '');
     if (selectedProviderId === 'custom-openai') {
-      setCustomModelInput(latest.customOpenAI?.model ?? '');
+      setCustomModelInput(stored ?? '');
     } else {
-      const stored = latest.modelByProvider?.[selectedProviderId];
       const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
       setCustomModelInput(stored && !inCatalog ? stored : '');
     }
-  }, [selectedProviderId]);
+  }, [selectedProviderId, settings.modelByProvider, settings.customOpenAI?.model]);
+  const editCustomModel = (value: string): void => {
+    modelDraft.current = { providerId: selectedProviderId, dirty: true, value };
+    setCustomModelInput(value);
+    setSaved(false);
+  };
 
   const snapshot = probeConfig(settings, selectedProviderId, activeMode, {
     apiKey: activeMode === 'plan' ? planKeyInput : apiKeyInput,
@@ -264,6 +274,7 @@ function LlmSection() {
     : (provider?.models.find((m) => m.recommended) ?? provider?.models[0])?.id ?? '';
 
   const handleModelChange = async (id: string): Promise<void> => {
+    modelDraft.current = { providerId: selectedProviderId, dirty: true, value: id };
     setSelectedModelId(id);
     setCustomModelInput('');
     setSaved(false);
@@ -454,7 +465,7 @@ function LlmSection() {
                 <input
                   type="text"
                   value={customModelInput}
-                  onChange={(e) => { setCustomModelInput(e.target.value); setSaved(false); }}
+                  onChange={(e) => editCustomModel(e.target.value)}
                   onBlur={() => { void handleCustomModelBlur(); }}
                   placeholder={t('settings.customModelLabel')}
                   style={{ minWidth: 280, fontFamily: 'var(--font-mono)', fontSize: 12 }}
@@ -507,7 +518,7 @@ function LlmSection() {
               <input
                 type="text"
                 value={customModelInput}
-                onChange={(e) => { setCustomModelInput(e.target.value); setSaved(false); }}
+                onChange={(e) => editCustomModel(e.target.value)}
                 onBlur={() => { void handleCustomModelBlur(); }}
                 placeholder={t('settings.customModelPlaceholder')}
                 style={{ minWidth: 280 }}
