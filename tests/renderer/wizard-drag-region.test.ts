@@ -16,8 +16,8 @@ import { resolve } from 'node:path';
  * These behaviors are OS-level and cannot be asserted in vitest's node
  * environment; verify once by hand on Windows:
  *
- *   1. `set OPENDEPLOY_HOME=%TEMP%\od-fresh` (or delete `~/.opendeploy`
- *      / settings.json) → `pnpm dev` → wizard shows on first run.
+ *   1. Use a fresh isolated OPENDEPLOY_HOME and Electron userData directory.
+ *      Never remove the user's settings; launch the first-run wizard there.
  *   2. Drag the empty strip above the wizard card → window moves.
  *   3. Double-click the same strip → toggles maximize / restore.
  *   4. While maximized, drag the strip → window restores and follows

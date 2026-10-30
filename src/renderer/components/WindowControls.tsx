@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next';
 
 /**
  * WindowControls — Windows-style minimize / max-restore / close captions for
- * the frameless window. Rendered inside the in-app TitleBar (and as a float
- * overlay on the chromeless wizard page). Colors come from the `.wincap`
+ * the frameless window. Rendered inside the in-app TitleBar and the wizard's
+ * dedicated drag bar. Colors come from the `.wincap`
  * styles, so the captions always follow the active theme.
  */
 export function WindowControls(): ReactElement {
@@ -13,10 +13,14 @@ export function WindowControls(): ReactElement {
 
   useEffect(() => {
     let disposed = false;
-    void window.opendeploy.winIsMaximized().then((m) => {
+    let receivedEvent = false;
+    const off = window.opendeploy.winOnMaximized((m) => {
+      receivedEvent = true;
       if (!disposed) setMaximized(m);
     });
-    const off = window.opendeploy.winOnMaximized((m) => setMaximized(m));
+    void window.opendeploy.winIsMaximized().then((m) => {
+      if (!disposed && !receivedEvent) setMaximized(m);
+    }).catch(() => { /* Later native events still provide the current state. */ });
     return () => {
       disposed = true;
       off();
@@ -39,8 +43,8 @@ export function WindowControls(): ReactElement {
       <button
         type="button"
         className="wincap"
-        aria-label={t('titlebar.maximize')}
-        title={t('titlebar.maximize')}
+        aria-label={t(maximized ? 'titlebar.restore' : 'titlebar.maximize')}
+        title={t(maximized ? 'titlebar.restore' : 'titlebar.maximize')}
         onClick={() => void window.opendeploy.winToggleMaximize()}
       >
         {maximized ? (
