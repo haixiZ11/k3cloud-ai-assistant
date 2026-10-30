@@ -4,6 +4,7 @@
     "types": ["node", "vite/client"]
   },
   "include": [
+    "main/ipc-llm-model.test.ts",
     "renderer/probe-pages.test.ts",
     "renderer/provider-probe.test.ts",
     "renderer/settings-store.test.ts",

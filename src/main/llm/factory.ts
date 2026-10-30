@@ -21,6 +21,8 @@ export interface ClientOptions {
    * that doesn't fit either standard or plan endpoint.
    */
   baseUrlOverride?: string;
+  /** Saved model for a custom provider with no built-in catalog default. */
+  defaultModel?: string;
 }
 
 export interface ResolvedEndpoint {
@@ -33,6 +35,11 @@ export function resolveProviderEndpoint(
   providerId: string,
   opts: ClientOptions = {}
 ): ResolvedEndpoint {
+  if (providerId === 'custom-openai') {
+    const baseUrl = opts.baseUrlOverride?.trim();
+    if (!baseUrl) throw new Error('custom-openai requires a base URL');
+    return { baseUrl, defaultModel: opts.defaultModel?.trim() ?? '', format: 'openai' };
+  }
   const cfg = PROVIDER_CONFIGS[providerId];
   if (!cfg) throw new Error(`Unknown provider: ${providerId}`);
 

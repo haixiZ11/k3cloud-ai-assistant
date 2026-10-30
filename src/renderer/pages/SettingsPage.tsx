@@ -214,16 +214,19 @@ function LlmSection() {
 
   // Re-resolve when provider changes (selectedProviderId mutates as user clicks cards)
   useEffect(() => {
-    const m = resolveActiveModel(selectedProviderId, settings.modelByProvider);
+    // Persistence acknowledgements may belong to an older draft. Only switching
+    // provider reloads the model; a slow save must never overwrite newer input.
+    const latest = useSettingsStore.getState().settings;
+    const m = resolveActiveModel(selectedProviderId, latest.modelByProvider);
     setSelectedModelId(m?.id ?? '');
     if (selectedProviderId === 'custom-openai') {
-      setCustomModelInput(settings.customOpenAI?.model ?? '');
+      setCustomModelInput(latest.customOpenAI?.model ?? '');
     } else {
-      const stored = settings.modelByProvider?.[selectedProviderId];
+      const stored = latest.modelByProvider?.[selectedProviderId];
       const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
       setCustomModelInput(stored && !inCatalog ? stored : '');
     }
-  }, [selectedProviderId, settings.modelByProvider, settings.customOpenAI?.model]);
+  }, [selectedProviderId]);
 
   const snapshot = probeConfig(settings, selectedProviderId, activeMode, {
     apiKey: activeMode === 'plan' ? planKeyInput : apiKeyInput,

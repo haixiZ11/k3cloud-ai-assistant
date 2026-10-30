@@ -134,10 +134,19 @@ export function registerLlmIpc(getMainWindow: () => BrowserWindow | null): void 
         // (用户在 "高级" 抽屉里配的,跟 provider id 1:1 对应)。
         // 同一份 settings 下面 rawDump 也复用,避免双读。
         const persistedSettings = await loadSettings();
-        const baseUrlOverride = persistedSettings.apiBaseUrlOverride?.[req.providerId];
+        const custom = req.providerId === 'custom-openai' ? persistedSettings.customOpenAI : undefined;
+        const baseUrlOverride = persistedSettings.apiBaseUrlOverride?.[req.providerId]?.trim()
+          || custom?.baseUrl?.trim();
+        const model = req.providerId === 'custom-openai'
+          ? req.model?.trim() || custom?.model?.trim()
+          : req.model;
+        if (req.providerId === 'custom-openai' && !model) {
+          throw new Error('custom-openai requires a model');
+        }
         const client = createLlmClient(req.providerId, {
           accessMode: req.accessMode,
-          baseUrlOverride
+          baseUrlOverride,
+          defaultModel: custom?.model
         });
         // conversationId for trace stitching — fall back to requestId for
         // brand-new conversations (renderer attaches `conversationId` only
@@ -161,7 +170,7 @@ export function registerLlmIpc(getMainWindow: () => BrowserWindow | null): void 
           initialMessages: history,
           providerId: req.providerId,
           apiKey: req.apiKey,
-          model: req.model,
+          model,
           systemPrompt,
           conversationId: traceConvId,
           rawCaptureFactory,

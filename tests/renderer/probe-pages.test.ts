@@ -92,6 +92,23 @@ async function provider(id: string) {
 }
 
 describe('Settings connection snapshot', () => {
+  it.each(['deepseek', 'custom-openai'])('preserves a newer model draft during slow persistence for %s', async (providerId) => {
+    await settingsPage({
+      llmProvider: providerId,
+      customOpenAI: { baseUrl: 'https://synthetic.test/v1', model: 'synthetic-initial' },
+    });
+    const model = host.querySelector<HTMLInputElement>('input[list="custom-openai-model-list"], input[placeholder="settings.customModelLabel"]')!;
+    const saving = deferred<void>();
+    api.saveSettings.mockReturnValueOnce(saving.promise);
+    await input(model, 'synthetic-model-A');
+    await blur(model);
+    await input(model, 'synthetic-model-B');
+    await act(async () => saving.resolve());
+    expect(model.value).toBe('synthetic-model-B');
+    await blur(model);
+    const settings = useSettingsStore.getState().settings;
+    expect(providerId === 'custom-openai' ? settings.customOpenAI?.model : settings.modelByProvider?.[providerId]).toBe('synthetic-model-B');
+  });
   it.each(['', 'synthetic-old-key'])(
     'tests the newly saved key, not the previous render (%s)',
     async (oldKey) => {
