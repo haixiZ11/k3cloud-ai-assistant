@@ -1,0 +1,5 @@
+{
+  "extends": "../tsconfig.web.json",
+  "compilerOptions": { "types": ["node", "vite/client"] },
+  "include": ["renderer/window-controls.test.ts", "../src/renderer/types/window.d.ts"]
+}

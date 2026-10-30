@@ -14,6 +14,7 @@ import {
   type ProjectSummary
 } from '@renderer/components/SecondarySide';
 import { StatusBar } from '@renderer/components/StatusBar';
+import { WindowControls } from '@renderer/components/WindowControls';
 import { WorkspacePage } from '@renderer/pages/WorkspacePage';
 import { SettingsPage } from '@renderer/pages/SettingsPage';
 import { SkillsPage } from '@renderer/pages/SkillsPage';
@@ -214,6 +215,14 @@ export function App() {
       <ThemeProvider>
         <div className={appClass}>
           {!isWizard && <TitleBar />}
+          {/* Wizard hides the TitleBar, but the frameless window still needs
+              a drag surface and min/max/close captions — the dragbar fills
+              the (otherwise empty) titlebar grid row. */}
+          {isWizard && (
+            <div className="wiz-dragbar">
+              <WindowControls />
+            </div>
+          )}
           {!isWizard && <NavRail current={page} onChange={setPage} />}
           {!isWizard && (
             <SecondarySide

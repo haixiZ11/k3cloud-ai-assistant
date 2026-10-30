@@ -152,6 +152,7 @@
   "titlebar": {
     "minimize": "Minimize",
     "maximize": "Maximize",
+    "restore": "Restore",
     "close": "Close",
     "userDefault": "User",
     "editionCommunity": "Community",
