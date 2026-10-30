@@ -12,6 +12,7 @@ const api: IpcApi = {
   llmAbort: (requestId: string) => ipcRenderer.invoke('llm:abort', requestId),
   llmListModels: (req: LlmProviderProbeRequest) => ipcRenderer.invoke('llm:listModels', req),
   llmTestConnection: (req: LlmProviderProbeRequest) => ipcRenderer.invoke('llm:testConnection', req),
+  llmCancelProbe: (requestId: string) => ipcRenderer.invoke('llm:cancelProbe', requestId),
   llmOnStream: (cb: (ev: LlmStreamEvent) => void) => {
     const listener = (_event: unknown, ev: LlmStreamEvent) => cb(ev);
     ipcRenderer.on('llm:stream', listener);

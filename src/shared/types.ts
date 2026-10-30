@@ -56,10 +56,7 @@ export interface AppSettings {
    * 未完成 onboarding,每次启动都被弹回向导。
    */
   onboardingDone?: boolean;
-  /**
-   * SettingsPage 自动获取的模型目录缓存 (来自 /models 或 /api/tags)。
-   * 仅作下拉选项补充,不参与请求路由;拉取失败静默回退内置目录。
-   */
+  /** Legacy provider-only catalog; ignored by configuration-scoped probe caches. */
   fetchedModelsByProvider?: Record<string, { ids: string[]; fetchedAt: number }>;
   /** User-configured knowledge sources (github / gitee / local). Defaults to empty. */
   knowledgeSources?: KnowledgeSource[];
@@ -107,13 +104,15 @@ export interface LlmChatRequest {
  * key 跟 llm:send 一样由 renderer 按 accessMode 选好桶后传入,main 不反查。
  */
 export interface LlmProviderProbeRequest {
+  /** Ephemeral renderer request identity, scoped to its IPC sender. */
+  requestId?: string;
   providerId: string;
   apiKey?: string;
   accessMode?: 'payg' | 'plan';
   /**
-   * Base URL 覆盖(main 端直读 settings 里的 apiBaseUrlOverride 也行,但
-   * custom-openai 的地址存在 renderer 专属的 customOpenAI.baseUrl 里,
-   * renderer 统一算好传下来最简单)。
+   * Endpoint captured with the key/model snapshot. The probe handlers do not
+   * re-read mutable settings while the request is in flight. If omitted by
+   * an older caller, resolve only the provider's built-in default.
    */
   baseUrlOverride?: string;
   /** testConnection 必传:要打的模型 id;listModels 忽略。 */
@@ -174,6 +173,7 @@ export interface IpcApi {
   ) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
   /** 发一个极小真实请求验证 baseUrl + key + model 全链路连通。 */
   llmTestConnection: (req: LlmProviderProbeRequest) => Promise<TestConnectionResult>;
+  llmCancelProbe: (requestId: string) => Promise<void>;
   conversationsList: () => Promise<Array<{ id: string; title: string; savedAt: string; messageCount: number }>>;
   conversationsLoad: (id: string) => Promise<{
     id: string;

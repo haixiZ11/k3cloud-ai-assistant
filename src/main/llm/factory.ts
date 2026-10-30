@@ -3,6 +3,7 @@ import { PROVIDER_CONFIGS } from './types';
 import { createOpenAiClient, listOpenAiModels } from './openai-client';
 import { createAnthropicClient, listAnthropicModels } from './anthropic-client';
 import { createOllamaClient, listOllamaModels } from './ollama-client';
+import { withProbeTimeout } from './probe-timeout';
 
 export type AccessMode = 'payg' | 'plan';
 
@@ -61,6 +62,8 @@ export function createLlmClient(providerId: string, opts: ClientOptions = {}): L
 export interface ListModelsOptions extends ClientOptions {
   apiKey?: string;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 /**
@@ -74,6 +77,13 @@ export async function listModelsForProvider(
   providerId: string,
   opts: ListModelsOptions = {}
 ): Promise<string[]> {
+  return withProbeTimeout((signal) => listModelsUnbounded(providerId, {
+    ...opts,
+    fetchImpl: (url, init) => (opts.fetchImpl ?? fetch)(url, { ...init, signal }),
+  }), opts.timeoutMs, opts.signal);
+}
+
+async function listModelsUnbounded(providerId: string, opts: ListModelsOptions): Promise<string[]> {
   // custom-openai has no built-in endpoint — the renderer supplies its
   // customOpenAI.baseUrl via baseUrlOverride.
   if (providerId === 'custom-openai') {

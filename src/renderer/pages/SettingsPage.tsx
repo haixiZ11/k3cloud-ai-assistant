@@ -1,10 +1,12 @@
-import React, { useCallback, useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@renderer/i18n';
 import { useSettingsStore } from '@renderer/stores/settings-store';
 import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel, type LlmProvider, type LlmModel } from '@renderer/data/providers';
+import { useProviderProbe } from '../hooks/use-provider-probe';
+import { probeConfig, sameProbe, type ProbeConfig } from '../stores/provider-probe';
 import { KeyInput } from '@renderer/components/KeyInput';
-import type { Language, Theme, TestConnectionResult } from '@shared/types';
+import type { Language, Theme } from '@shared/types';
 
 const LANGUAGES: { value: Language; labelKey: string }[] = [
   { value: 'zh-CN', labelKey: 'zh-CN' },
@@ -181,11 +183,13 @@ function LlmSection() {
     settings.planApiKeys?.[initialProviderId] ?? ''
   );
   const [baseUrlInput, setBaseUrlInput] = useState<string>(
-    settings.apiBaseUrlOverride?.[initialProviderId] ?? ''
+    settings.apiBaseUrlOverride?.[initialProviderId]
+      ?? (initialProviderId === 'custom-openai' ? settings.customOpenAI?.baseUrl : '') ?? ''
   );
   const activeMode: 'payg' | 'plan' =
     settings.apiAccessMode?.[selectedProviderId] ?? 'payg';
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [selectedModelId, setSelectedModelId] = useState<string>(
     () => resolveActiveModel(selectedProviderId, settings.modelByProvider)?.id ?? ''
@@ -208,10 +212,6 @@ function LlmSection() {
     return stored && !inCatalog ? stored : '';
   });
 
-  // ─── 连通性测试 ───
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
-
   // Re-resolve when provider changes (selectedProviderId mutates as user clicks cards)
   useEffect(() => {
     const m = resolveActiveModel(selectedProviderId, settings.modelByProvider);
@@ -223,55 +223,32 @@ function LlmSection() {
       const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
       setCustomModelInput(stored && !inCatalog ? stored : '');
     }
-    setTestResult(null);
-  }, [selectedProviderId, settings.modelByProvider, settings.customOpenAI]);
+  }, [selectedProviderId, settings.modelByProvider, settings.customOpenAI?.model]);
 
-  // ─── 模型目录自动获取 ───
-  const setFetchedModels = useSettingsStore((s) => s.setFetchedModels);
-  const fetchingRef = useRef<Set<string>>(new Set());
-  const fetchCatalog = useCallback(async (providerId: string, mode: 'payg' | 'plan'): Promise<void> => {
-    if (fetchingRef.current.has(providerId)) return;
-    const target = PROVIDER_BY_ID[providerId];
-    if (!target) return;
-    // custom-openai 的密钥存专属字段 customOpenAI.apiKey(见 settings-store.setApiKey),
-    // 其余供应商走 apiKeys/planApiKeys。
-    const key =
-      providerId === 'custom-openai'
-        ? settings.customOpenAI?.apiKey
-        : mode === 'plan'
-          ? settings.planApiKeys?.[providerId]
-          : settings.apiKeys?.[providerId];
-    if (providerId !== 'ollama' && !key) return;
-    const baseUrlOverride =
-      providerId === 'custom-openai'
-        ? settings.apiBaseUrlOverride?.[providerId] || settings.customOpenAI?.baseUrl
-        : settings.apiBaseUrlOverride?.[providerId];
-    if (providerId === 'custom-openai' && !baseUrlOverride) return;
-    fetchingRef.current.add(providerId);
-    try {
-      const res = await window.opendeploy.llmListModels({
-        providerId,
-        apiKey: key,
-        accessMode: mode,
-        ...(baseUrlOverride ? { baseUrlOverride } : {})
-      });
-      if (res.ok && res.models && res.models.length > 0) {
-        await setFetchedModels(providerId, res.models);
-      }
-    } catch {
-      // 静默 — 拉不到就用内置目录,不打扰用户
-    } finally {
-      fetchingRef.current.delete(providerId);
-    }
-  }, [settings.apiKeys, settings.planApiKeys, settings.customOpenAI, settings.apiBaseUrlOverride, setFetchedModels]);
-
-  // 选中供应商 / 切计费模式 / key 变化时自动拉一次;有缓存也后台刷新。
+  const snapshot = probeConfig(settings, selectedProviderId, activeMode, {
+    apiKey: activeMode === 'plan' ? planKeyInput : apiKeyInput,
+    model: selectedProviderId === 'ollama'
+      ? ollamaInput.trim() || PROVIDER_BY_ID.ollama.modelInputDefault
+      : customModelInput.trim() || selectedModelId,
+    baseUrlOverride: baseUrlInput,
+  });
+  const { probe, testing, result: testResult, models: fetchedIds } = useProviderProbe(snapshot);
+  const persisted = probeConfig(settings, selectedProviderId, activeMode);
+  // Refresh only saved credentials/endpoints. Draft edits invalidate old responses,
+  // but typing a partial key must not send unauthorised catalog requests.
   useEffect(() => {
-    void fetchCatalog(selectedProviderId, activeMode);
-  }, [selectedProviderId, activeMode, fetchCatalog]);
+    if (sameProbe(snapshot, persisted, false)) probe.catalog();
+  }, [probe, snapshot.providerId, snapshot.accessMode, snapshot.apiKey, snapshot.baseUrlOverride,
+    snapshot.model, persisted.apiKey, persisted.baseUrlOverride]);
+  const saves = useRef(new Set<string>());
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
+  const announceSaved = () => {
+    setSaved(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 2000);
+  };
 
-  // 下拉选项 = 内置目录 + 已拉取 id (去重);纯拉取的条目 label 就是模型 id。
-  const fetchedIds = settings.fetchedModelsByProvider?.[selectedProviderId]?.ids ?? [];
   const mergedModels: LlmModel[] = [
     ...(provider?.models ?? []),
     ...fetchedIds
@@ -312,44 +289,11 @@ function LlmSection() {
     await setOllamaModelInput(fallback);
   };
 
-  const effectiveModelId = (): string => {
-    if (isOllama) return ollamaInput.trim() || PROVIDER_BY_ID['ollama']?.modelInputDefault || '';
-    return customModelInput.trim() || selectedModelId || '';
-  };
-
-  const runTestConnection = async (): Promise<void> => {
-    const model = effectiveModelId();
-    if (!model) {
-      setTestResult({ ok: false, latencyMs: 0, baseUrl: '', error: t('settings.testNoModel') });
-      return;
-    }
-    setTestResult(null);
-    setTesting(true);
-    try {
-      const key =
-        selectedProviderId === 'custom-openai'
-          ? settings.customOpenAI?.apiKey
-          : activeMode === 'plan'
-            ? settings.planApiKeys?.[selectedProviderId]
-            : settings.apiKeys?.[selectedProviderId];
-      const baseUrlOverride =
-        selectedProviderId === 'custom-openai'
-          ? settings.apiBaseUrlOverride?.[selectedProviderId] || settings.customOpenAI?.baseUrl
-          : settings.apiBaseUrlOverride?.[selectedProviderId];
-      const res = await window.opendeploy.llmTestConnection({
-        providerId: selectedProviderId,
-        apiKey: key,
-        model,
-        accessMode: activeMode,
-        ...(baseUrlOverride ? { baseUrlOverride } : {})
-      });
-      setTestResult(res);
-    } finally {
-      setTesting(false);
-    }
-  };
+  const runTestConnection = (config: ProbeConfig = snapshot): void => probe.test(config);
 
   const handleProviderSelect = async (provider: LlmProvider): Promise<void> => {
+    probe.cancel();
+    setSaveError(null);
     setSelectedProviderId(provider.id);
     setApiKeyInput(
       provider.id === 'custom-openai'
@@ -357,33 +301,46 @@ function LlmSection() {
         : settings.apiKeys?.[provider.id] ?? ''
     );
     setPlanKeyInput(settings.planApiKeys?.[provider.id] ?? '');
-    setBaseUrlInput(settings.apiBaseUrlOverride?.[provider.id] ?? '');
+    setBaseUrlInput(settings.apiBaseUrlOverride?.[provider.id]
+      ?? (provider.id === 'custom-openai' ? settings.customOpenAI?.baseUrl : '') ?? '');
     setSaved(false);
     await setLlmProvider(provider.id);
   };
 
-  const handleSavePayg = async (): Promise<void> => {
-    await setApiKey(selectedProviderId, apiKeyInput);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
-    void runTestConnection();
+  const handleSaveKey = async (mode: 'payg' | 'plan', value: string): Promise<void> => {
+    const config = probeConfig(settings, selectedProviderId, mode, {
+      apiKey: value, model: snapshot.model, baseUrlOverride: snapshot.baseUrlOverride,
+    });
+    const saveId = `${selectedProviderId}/${mode}`;
+    if (saves.current.has(saveId)) return;
+    saves.current.add(saveId);
+    const stillCurrent = probe.checkpoint();
+    setSaveError(null);
+    try {
+      if (mode === 'plan') await setPlanApiKey(config.providerId, config.apiKey);
+      else await setApiKey(config.providerId, config.apiKey);
+      if (stillCurrent()) {
+        announceSaved();
+        // Saving an inactive key bucket never replaces the active mode's result.
+        runTestConnection(config);
+      }
+    } catch {
+      if (stillCurrent()) setSaveError(t('settings.saveFailed'));
+    } finally { saves.current.delete(saveId); }
   };
-
-  const handleSavePlan = async (): Promise<void> => {
-    await setPlanApiKey(selectedProviderId, planKeyInput);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
-    void runTestConnection();
-  };
+  const handleSavePayg = () => handleSaveKey('payg', apiKeyInput);
+  const handleSavePlan = () => handleSaveKey('plan', planKeyInput);
 
   const handleModeChange = async (mode: 'payg' | 'plan'): Promise<void> => {
+    probe.cancel();
+    setSaveError(null);
     await setApiAccessMode(selectedProviderId, mode);
   };
 
   const handleSaveBaseUrl = async (): Promise<void> => {
+    const stillCurrent = probe.checkpoint();
     await setApiBaseUrlOverride(selectedProviderId, baseUrlInput);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
+    if (stillCurrent()) announceSaved();
   };
 
   const handleResetBaseUrl = async (): Promise<void> => {
@@ -522,7 +479,7 @@ function LlmSection() {
                 list="ollama-model-list"
               />
               <datalist id="ollama-model-list">
-                {(settings.fetchedModelsByProvider?.['ollama']?.ids ?? []).map((id) => (
+                {fetchedIds.map((id) => (
                   <option key={id} value={id} />
                 ))}
               </datalist>
@@ -554,7 +511,7 @@ function LlmSection() {
                 list="custom-openai-model-list"
               />
               <datalist id="custom-openai-model-list">
-                {(settings.fetchedModelsByProvider?.['custom-openai']?.ids ?? []).map((id) => (
+                {fetchedIds.map((id) => (
                   <option key={id} value={id} />
                 ))}
               </datalist>
@@ -705,6 +662,7 @@ function LlmSection() {
                 <span className="chip good">{t('settings.saved')}</span>
               </div>
             )}
+            {saveError && <div role="alert">{saveError}</div>}
 
             {/* Connectivity probe — tiny real request through the same
                 endpoint resolution the chat path uses. Auto-runs after a
@@ -740,6 +698,7 @@ function LlmSection() {
                 >
                   {testing ? t('settings.testing') : t('settings.testConnection')}
                 </button>
+                {testing && <button type="button" className="btn" onClick={probe.cancel}>{t('settings.cancelTest')}</button>}
               </div>
             </div>
 

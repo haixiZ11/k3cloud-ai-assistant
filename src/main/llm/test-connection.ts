@@ -1,5 +1,6 @@
 import { resolveProviderEndpoint } from './factory';
 import { buildOpenAiEndpoint } from './openai-client';
+import { withProbeTimeout } from './probe-timeout';
 
 export interface TestConnectionInput {
   providerId: string;
@@ -9,6 +10,7 @@ export interface TestConnectionInput {
   accessMode?: 'payg' | 'plan';
   baseUrlOverride?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
   /** Override for tests */
   fetchImpl?: typeof fetch;
 }
@@ -31,7 +33,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * chat completion also verifies the selected model is reachable.
  */
 export async function testProviderConnection(
-  input: TestConnectionInput
+  input: TestConnectionInput,
 ): Promise<TestConnectionOutcome> {
   const started = Date.now();
   const fetchImpl = input.fetchImpl ?? fetch;
@@ -43,13 +45,18 @@ export async function testProviderConnection(
     baseUrl = input.baseUrlOverride?.trim() ?? '';
     format = 'openai';
     if (!baseUrl) {
-      return { ok: false, latencyMs: elapsed(), baseUrl: '', error: 'custom-openai requires a base URL' };
+      return {
+        ok: false,
+        latencyMs: elapsed(),
+        baseUrl: '',
+        error: 'custom-openai requires a base URL',
+      };
     }
   } else {
     try {
       const ep = resolveProviderEndpoint(input.providerId, {
         accessMode: input.accessMode,
-        baseUrlOverride: input.baseUrlOverride
+        baseUrlOverride: input.baseUrlOverride,
       });
       baseUrl = ep.baseUrl;
       format = ep.format;
@@ -58,14 +65,19 @@ export async function testProviderConnection(
         ok: false,
         latencyMs: elapsed(),
         baseUrl: '',
-        error: err instanceof Error ? err.message : String(err)
+        error: err instanceof Error ? err.message : String(err),
       };
     }
   }
 
   const model = input.model?.trim();
   if (!model) {
-    return { ok: false, latencyMs: elapsed(), baseUrl, error: 'no model selected' };
+    return {
+      ok: false,
+      latencyMs: elapsed(),
+      baseUrl,
+      error: 'no model selected',
+    };
   }
 
   let url: string;
@@ -76,7 +88,7 @@ export async function testProviderConnection(
     headers = {
       'Content-Type': 'application/json',
       'x-api-key': input.apiKey ?? '',
-      'anthropic-version': '2023-06-01'
+      'anthropic-version': '2023-06-01',
     };
     body = { model, max_tokens: 8, messages: PING_MESSAGES };
   } else if (format === 'ollama') {
@@ -85,28 +97,42 @@ export async function testProviderConnection(
     body = { model, messages: PING_MESSAGES, stream: false };
   } else {
     url = buildOpenAiEndpoint(baseUrl, '/chat/completions');
-    headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${input.apiKey ?? ''}` };
+    headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${input.apiKey ?? ''}`,
+    };
     body = { model, messages: PING_MESSAGES, max_tokens: 8, stream: false };
   }
 
   try {
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(input.timeoutMs ?? DEFAULT_TIMEOUT_MS)
-    });
-    if (!response.ok) {
-      const text = (await response.text()).slice(0, 300);
-      return { ok: false, latencyMs: elapsed(), baseUrl, error: `HTTP ${response.status}: ${text}` };
-    }
-    return { ok: true, latencyMs: elapsed(), baseUrl };
+    return await withProbeTimeout(
+      async (signal) => {
+        const response = await fetchImpl(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
+        if (!response.ok) {
+          const text = (await response.text()).slice(0, 300);
+          return {
+            ok: false,
+            latencyMs: elapsed(),
+            baseUrl,
+            error: `HTTP ${response.status}: ${text}`,
+          };
+        }
+        return { ok: true, latencyMs: elapsed(), baseUrl };
+      },
+      input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      input.signal,
+    );
   } catch (err) {
     return {
       ok: false,
       latencyMs: elapsed(),
       baseUrl,
-      error: err instanceof Error ? err.message : String(err)
+      error: err instanceof Error ? err.message : String(err),
     };
   }
 }

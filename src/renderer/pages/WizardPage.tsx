@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSettingsStore } from '@renderer/stores/settings-store';
 import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel, type LlmModel } from '@renderer/data/providers';
 import { KeyInput } from '@renderer/components/KeyInput';
 import { Icons } from '@renderer/components/icons';
 import { LogoMark } from '@renderer/components/LogoMark';
-import type { TestConnectionResult } from '@shared/types';
+import { useProviderProbe } from '../hooks/use-provider-probe';
+import { probeConfig } from '../stores/provider-probe';
 
 const WIZARD_PROVIDERS = PROVIDERS.filter((p) => p.id !== 'custom-openai');
 
@@ -32,10 +33,6 @@ export function WizardPage({ onFinish }: WizardPageProps) {
   const [accessMode, setAccessMode] = useState<'payg' | 'plan'>('payg');
   const [selectedModelId, setSelectedModelId] = useState<string>('');
   const [customModelId, setCustomModelId] = useState('');
-  const [fetchedIds, setFetchedIds] = useState<string[]>([]);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
-  const lastProbedKey = useRef<string>('');
   const setLlmProvider = useSettingsStore((s) => s.setLlmProvider);
   const setApiKey = useSettingsStore((s) => s.setApiKey);
   const setPlanApiKey = useSettingsStore((s) => s.setPlanApiKey);
@@ -43,6 +40,13 @@ export function WizardPage({ onFinish }: WizardPageProps) {
   const setModel = useSettingsStore((s) => s.setModel);
 
   const selectedProviderObj = selectedProvider ? PROVIDER_BY_ID[selectedProvider] : undefined;
+
+  const snapshot = probeConfig(settings, selectedProvider ?? '', accessMode, {
+    apiKey: apiKeyInput,
+    model: selectedProvider === 'ollama' ? PROVIDER_BY_ID.ollama.modelInputDefault
+      : customModelId.trim() || selectedModelId,
+  });
+  const { probe, testing, result: testResult, models: fetchedIds } = useProviderProbe(snapshot, step === 1 && !!selectedProvider);
 
   // Reset model when provider switches: pick the recommended model of the new
   // provider so the dropdown is never empty. Ollama (free-form input) stays ''.
@@ -54,9 +58,6 @@ export function WizardPage({ onFinish }: WizardPageProps) {
       setSelectedModelId(m?.id ?? '');
     }
     setCustomModelId('');
-    setFetchedIds([]);
-    setTestResult(null);
-    lastProbedKey.current = '';
   }, [selectedProvider]);
 
   // Reset access mode when provider switches — a provider may not advertise
@@ -68,37 +69,12 @@ export function WizardPage({ onFinish }: WizardPageProps) {
     setApiKeyInput(selectedProvider ? settings.apiKeys?.[selectedProvider] ?? '' : '');
   }, [selectedProvider]);
 
-  // key 输入框失焦 → 用刚输入的 key 拉模型目录 + 跑连通性测试(同一 key 只探测一次)。
+  // Model is part of the immutable probe identity; repeated blur while pending
+  // is deduplicated, while changing model/key/mode invalidates both requests.
   const probeWithKey = (): void => {
-    const key = apiKeyInput.trim();
-    if (!selectedProvider || !key) return;
-    const probeKey = `${selectedProvider}|${accessMode}|${key}`;
-    if (lastProbedKey.current === probeKey) return;
-    lastProbedKey.current = probeKey;
-    void (async () => {
-      const res = await window.opendeploy.llmListModels({
-        providerId: selectedProvider,
-        apiKey: key,
-        accessMode
-      });
-      if (res.ok && res.models && res.models.length > 0) setFetchedIds(res.models);
-    })();
-    void (async () => {
-      const model = customModelId.trim() || selectedModelId;
-      if (!model) return;
-      setTesting(true);
-      try {
-        const res = await window.opendeploy.llmTestConnection({
-          providerId: selectedProvider,
-          apiKey: key,
-          model,
-          accessMode
-        });
-        setTestResult(res);
-      } finally {
-        setTesting(false);
-      }
-    })();
+    if (!selectedProvider || !apiKeyInput.trim()) return;
+    probe.catalog();
+    probe.test(snapshot, false);
   };
 
   const effectiveModelId = (): string =>
@@ -124,6 +100,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
     (selectedProvider && PROVIDER_BY_ID[selectedProvider]?.short) ?? '—';
 
   const handleFinish = async (): Promise<void> => {
+    probe.cancel();
     if (selectedProvider) {
       await setLlmProvider(selectedProvider);
       if (selectedProvider !== 'ollama' && apiKeyInput.trim()) {
@@ -177,7 +154,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
               type="button"
               className="btn"
               style={{ fontSize: 12, color: 'var(--muted)' }}
-              onClick={onFinish}
+              onClick={() => { probe.cancel(); onFinish(); }}
             >
               {t('wizard.skip')}
             </button>
@@ -356,6 +333,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                             inputStyle={{ width: '100%', flex: '1 1 auto' }}
                             containerStyle={{ width: '100%' }}
                           />
+                          {testing && <button type="button" className="btn" onClick={probe.cancel}>{t('settings.cancelTest')}</button>}
                           {(testing || testResult) && (
                             <div
                               className="small"
@@ -422,6 +400,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                                 type="text"
                                 value={customModelId}
                                 onChange={(e) => setCustomModelId(e.target.value)}
+                                onBlur={probeWithKey}
                                 placeholder={t('settings.customModelLabel')}
                                 style={{
                                   width: '100%',
@@ -495,7 +474,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
               <button
                 className="btn"
                 type="button"
-                onClick={() => setStep((s) => Math.max(0, s - 1))}
+                onClick={() => { probe.cancel(); setStep((s) => Math.max(0, s - 1)); }}
               >
                 {t('wizard.back')}
               </button>
@@ -507,7 +486,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                   className="btn"
                   type="button"
                   style={{ color: 'var(--muted)', fontSize: 12 }}
-                  onClick={onFinish}
+                  onClick={() => { probe.cancel(); onFinish(); }}
                 >
                   {t('wizard.skip')}
                 </button>
@@ -517,7 +496,7 @@ export function WizardPage({ onFinish }: WizardPageProps) {
                   className="btn primary lg"
                   type="button"
                   disabled={step === 1 && providerStepBlocked}
-                  onClick={() => setStep((s) => Math.min(steps.length, s + 1))}
+                  onClick={() => { probe.cancel(); setStep((s) => Math.min(steps.length, s + 1)); }}
                 >
                   {t('wizard.continue')}
                 </button>
