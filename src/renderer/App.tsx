@@ -145,8 +145,13 @@ export function App() {
 
   // First-launch detection: show wizard if setup is incomplete.
   // Incomplete = no provider OR (non-Ollama provider without API key).
+  // Runs ONCE per session (deps: loaded only) — watching settings.* here
+  // meant that switching to a not-yet-keyed provider in Settings instantly
+  // teleporting the user back into the wizard mid-configuration.
+  // `settings.onboardingDone` makes the skip path durable across restarts.
   useEffect(() => {
     if (!loaded || wizardCompleted) return;
+    if (settings.onboardingDone) return;
     const provider = settings.llmProvider;
     if (!provider) {
       setPage('wizard');
@@ -160,20 +165,16 @@ export function App() {
     const mode: 'payg' | 'plan' = settings.apiAccessMode?.[provider] ?? 'payg';
     const hasApiKey =
       !needsApiKey ||
-      !!(mode === 'plan'
-        ? settings.planApiKeys?.[provider]
-        : settings.apiKeys?.[provider]);
+      !!(provider === 'custom-openai'
+        ? settings.customOpenAI?.apiKey
+        : mode === 'plan'
+          ? settings.planApiKeys?.[provider]
+          : settings.apiKeys?.[provider]);
     if (!hasApiKey) {
       setPage('wizard');
     }
-  }, [
-    loaded,
-    settings.llmProvider,
-    settings.apiKeys,
-    settings.planApiKeys,
-    settings.apiAccessMode,
-    wizardCompleted
-  ]);
+    // Deliberately one-shot (deps: loaded only) — see comment above.
+  }, [loaded, wizardCompleted]);
 
   if (!loaded) {
     return (
@@ -202,6 +203,9 @@ export function App() {
 
   const handleWizardFinish = (): void => {
     setWizardCompleted(true);
+    // Persist so the one-shot first-launch check stays quiet after restarts
+    // — including when the user chose "skip for now" with nothing configured.
+    void useSettingsStore.getState().completeOnboarding();
     setPage('workspace');
   };
 

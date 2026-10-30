@@ -1,8 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@renderer/i18n';
 import { useSettingsStore } from '@renderer/stores/settings-store';
 import { PROVIDERS, PROVIDER_BY_ID, resolveActiveModel, type LlmProvider, type LlmModel } from '@renderer/data/providers';
+import { useProviderProbe } from '../hooks/use-provider-probe';
+import { probeConfig, sameProbe, type ProbeConfig } from '../stores/provider-probe';
+import { KeyInput } from '@renderer/components/KeyInput';
 import type { Language, Theme } from '@shared/types';
 
 const LANGUAGES: { value: Language; labelKey: string }[] = [
@@ -171,40 +174,122 @@ function LlmSection() {
   const provider: LlmProvider | undefined = PROVIDER_BY_ID[selectedProviderId];
 
   const [apiKeyInput, setApiKeyInput] = useState<string>(
-    settings.apiKeys?.[initialProviderId] ?? ''
+    () =>
+      initialProviderId === 'custom-openai'
+        ? settings.customOpenAI?.apiKey ?? ''
+        : settings.apiKeys?.[initialProviderId] ?? ''
   );
   const [planKeyInput, setPlanKeyInput] = useState<string>(
     settings.planApiKeys?.[initialProviderId] ?? ''
   );
   const [baseUrlInput, setBaseUrlInput] = useState<string>(
-    settings.apiBaseUrlOverride?.[initialProviderId] ?? ''
-  );
-  const [advancedOpen, setAdvancedOpen] = useState(
-    !!settings.apiBaseUrlOverride?.[initialProviderId]
+    settings.apiBaseUrlOverride?.[initialProviderId]
+      ?? (initialProviderId === 'custom-openai' ? settings.customOpenAI?.baseUrl : '') ?? ''
   );
   const activeMode: 'payg' | 'plan' =
     settings.apiAccessMode?.[selectedProviderId] ?? 'payg';
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [selectedModelId, setSelectedModelId] = useState<string>(
     () => resolveActiveModel(selectedProviderId, settings.modelByProvider)?.id ?? ''
   );
-  const selectedModel: LlmModel | undefined =
-    provider?.models.find((m) => m.id === selectedModelId);
+  const activeModelMeta: LlmModel | null = resolveActiveModel(
+    selectedProviderId,
+    settings.modelByProvider
+  );
 
   const [ollamaInput, setOllamaInput] = useState<string>(
     () => settings.ollamaModelInput ?? PROVIDER_BY_ID['ollama']?.modelInputDefault ?? ''
   );
 
-  // Re-resolve when provider changes (selectedProviderId mutates as user clicks cards)
+  // ─── 自定义模型名 — stored id 不在内置目录时回显在这里;custom-openai 的
+  // 模型名走专属的 customOpenAI.model(chat 请求也从那里读)───
+  const [customModelInput, setCustomModelInput] = useState<string>(() => {
+    if (initialProviderId === 'custom-openai') return settings.customOpenAI?.model ?? '';
+    const stored = settings.modelByProvider?.[initialProviderId];
+    const inCatalog = PROVIDER_BY_ID[initialProviderId]?.models.some((m) => m.id === stored);
+    return stored && !inCatalog ? stored : '';
+  });
+
+  const modelDraft = useRef({ providerId: selectedProviderId, dirty: false, value: '' });
+
+  // A pristine/reopened view follows saved settings. A newer local draft only
+  // accepts an acknowledgement for that same value, never an older save.
   useEffect(() => {
+    const stored = selectedProviderId === 'custom-openai'
+      ? settings.customOpenAI?.model
+      : settings.modelByProvider?.[selectedProviderId];
+    const draft = modelDraft.current;
+    if (draft.providerId === selectedProviderId && draft.dirty && draft.value.trim() !== stored) return;
+    modelDraft.current = { providerId: selectedProviderId, dirty: false, value: stored ?? '' };
     const m = resolveActiveModel(selectedProviderId, settings.modelByProvider);
     setSelectedModelId(m?.id ?? '');
-  }, [selectedProviderId, settings.modelByProvider]);
+    if (selectedProviderId === 'custom-openai') {
+      setCustomModelInput(stored ?? '');
+    } else {
+      const inCatalog = PROVIDER_BY_ID[selectedProviderId]?.models.some((mm) => mm.id === stored);
+      setCustomModelInput(stored && !inCatalog ? stored : '');
+    }
+  }, [selectedProviderId, settings.modelByProvider, settings.customOpenAI?.model]);
+  const editCustomModel = (value: string): void => {
+    modelDraft.current = { providerId: selectedProviderId, dirty: true, value };
+    setCustomModelInput(value);
+    setSaved(false);
+  };
+
+  const snapshot = probeConfig(settings, selectedProviderId, activeMode, {
+    apiKey: activeMode === 'plan' ? planKeyInput : apiKeyInput,
+    model: selectedProviderId === 'ollama'
+      ? ollamaInput.trim() || PROVIDER_BY_ID.ollama.modelInputDefault
+      : customModelInput.trim() || selectedModelId,
+    baseUrlOverride: baseUrlInput,
+  });
+  const { probe, testing, result: testResult, models: fetchedIds } = useProviderProbe(snapshot);
+  const persisted = probeConfig(settings, selectedProviderId, activeMode);
+  // Refresh only saved credentials/endpoints. Draft edits invalidate old responses,
+  // but typing a partial key must not send unauthorised catalog requests.
+  useEffect(() => {
+    if (sameProbe(snapshot, persisted, false)) probe.catalog();
+  }, [probe, snapshot.providerId, snapshot.accessMode, snapshot.apiKey, snapshot.baseUrlOverride,
+    snapshot.model, persisted.apiKey, persisted.baseUrlOverride]);
+  const saves = useRef(new Set<string>());
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(savedTimer.current), []);
+  const announceSaved = () => {
+    setSaved(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(false), 2000);
+  };
+
+  const mergedModels: LlmModel[] = [
+    ...(provider?.models ?? []),
+    ...fetchedIds
+      .filter((id) => !(provider?.models ?? []).some((m) => m.id === id))
+      .map((id) => ({ id, label: id, contextWindow: 128_000, maxOutput: 8_192, pricing: '—', hint: '' }))
+  ];
+  // stored 自定义模型不在 mergedModels 时,select 显示 recommended (实际请求仍用 stored)。
+  const selectValue = mergedModels.some((m) => m.id === selectedModelId)
+    ? selectedModelId
+    : (provider?.models.find((m) => m.recommended) ?? provider?.models[0])?.id ?? '';
 
   const handleModelChange = async (id: string): Promise<void> => {
+    modelDraft.current = { providerId: selectedProviderId, dirty: true, value: id };
     setSelectedModelId(id);
+    setCustomModelInput('');
+    setSaved(false);
     await setModel(selectedProviderId, id);
+  };
+  const handleCustomModelBlur = async (): Promise<void> => {
+    const trimmed = customModelInput.trim();
+    if (!trimmed) return; // 清空 = 放弃自定义,保持当前选择
+    const storedModel =
+      selectedProviderId === 'custom-openai'
+        ? settings.customOpenAI?.model
+        : settings.modelByProvider?.[selectedProviderId];
+    if (trimmed === storedModel) return;
+    setSelectedModelId(trimmed);
+    await setModel(selectedProviderId, trimmed);
   };
   const handleOllamaInputBlur = async (): Promise<void> => {
     const trimmed = ollamaInput.trim();
@@ -218,36 +303,58 @@ function LlmSection() {
     await setOllamaModelInput(fallback);
   };
 
+  const runTestConnection = (config: ProbeConfig = snapshot): void => probe.test(config);
+
   const handleProviderSelect = async (provider: LlmProvider): Promise<void> => {
+    probe.cancel();
+    setSaveError(null);
     setSelectedProviderId(provider.id);
-    setApiKeyInput(settings.apiKeys?.[provider.id] ?? '');
+    setApiKeyInput(
+      provider.id === 'custom-openai'
+        ? settings.customOpenAI?.apiKey ?? ''
+        : settings.apiKeys?.[provider.id] ?? ''
+    );
     setPlanKeyInput(settings.planApiKeys?.[provider.id] ?? '');
-    setBaseUrlInput(settings.apiBaseUrlOverride?.[provider.id] ?? '');
-    setAdvancedOpen(!!settings.apiBaseUrlOverride?.[provider.id]);
+    setBaseUrlInput(settings.apiBaseUrlOverride?.[provider.id]
+      ?? (provider.id === 'custom-openai' ? settings.customOpenAI?.baseUrl : '') ?? '');
     setSaved(false);
     await setLlmProvider(provider.id);
   };
 
-  const handleSavePayg = async (): Promise<void> => {
-    await setApiKey(selectedProviderId, apiKeyInput);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
+  const handleSaveKey = async (mode: 'payg' | 'plan', value: string): Promise<void> => {
+    const config = probeConfig(settings, selectedProviderId, mode, {
+      apiKey: value, model: snapshot.model, baseUrlOverride: snapshot.baseUrlOverride,
+    });
+    const saveId = `${selectedProviderId}/${mode}`;
+    if (saves.current.has(saveId)) return;
+    saves.current.add(saveId);
+    const stillCurrent = probe.checkpoint();
+    setSaveError(null);
+    try {
+      if (mode === 'plan') await setPlanApiKey(config.providerId, config.apiKey);
+      else await setApiKey(config.providerId, config.apiKey);
+      if (stillCurrent()) {
+        announceSaved();
+        // Saving an inactive key bucket never replaces the active mode's result.
+        runTestConnection(config);
+      }
+    } catch {
+      if (stillCurrent()) setSaveError(t('settings.saveFailed'));
+    } finally { saves.current.delete(saveId); }
   };
-
-  const handleSavePlan = async (): Promise<void> => {
-    await setPlanApiKey(selectedProviderId, planKeyInput);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
-  };
+  const handleSavePayg = () => handleSaveKey('payg', apiKeyInput);
+  const handleSavePlan = () => handleSaveKey('plan', planKeyInput);
 
   const handleModeChange = async (mode: 'payg' | 'plan'): Promise<void> => {
+    probe.cancel();
+    setSaveError(null);
     await setApiAccessMode(selectedProviderId, mode);
   };
 
   const handleSaveBaseUrl = async (): Promise<void> => {
+    const stillCurrent = probe.checkpoint();
     await setApiBaseUrlOverride(selectedProviderId, baseUrlInput);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
+    if (stillCurrent()) announceSaved();
   };
 
   const handleResetBaseUrl = async (): Promise<void> => {
@@ -256,6 +363,15 @@ function LlmSection() {
   };
 
   const isOllama = selectedProviderId === 'ollama';
+
+  // URL 字段的默认值随计费模式切换(豆包/千问/Kimi/MiMo 的包月端点不同)。
+  const defaultBaseUrl = (): string => {
+    if (!provider) return '';
+    if (activeMode === 'plan' && provider.tokenPlan?.baseUrl) return provider.tokenPlan.baseUrl;
+    return provider.baseUrl || '';
+  };
+  const effectiveBaseUrl = (): string =>
+    settings.apiBaseUrlOverride?.[selectedProviderId] || defaultBaseUrl() || '—';
 
   return (
     <>
@@ -300,7 +416,7 @@ function LlmSection() {
                 <div className="prov-sub">{p.sub}</div>
                 <div className="prov-row">
                   <span>
-                    {p.id === 'ollama'
+                    {p.id === 'ollama' || p.id === 'custom-openai'
                       ? t('settings.customModel')
                       : t('settings.modelCount', { count: p.models.length })}
                   </span>
@@ -327,23 +443,34 @@ function LlmSection() {
             </div>
             <div className="ctl" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <select
-                value={selectedModelId}
+                value={selectValue}
                 onChange={(e) => { void handleModelChange(e.target.value); }}
                 style={{ minWidth: 280, padding: '6px 8px' }}
               >
-                {provider.models.map((m) => (
+                {mergedModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.label}{m.recommended ? ` (${t('settings.recommendedShort')})` : ''} — {m.hint}
+                    {m.label}{m.recommended ? ` (${t('settings.recommendedShort')})` : ''}{m.hint ? ` — ${m.hint}` : ''}
                   </option>
                 ))}
               </select>
-              {selectedModel && (
+              {activeModelMeta && (
                 <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                  {t('settings.contextLabel')}: {(selectedModel.contextWindow / 1000).toFixed(0)}K ·{' '}
-                  {t('settings.maxOutputLabel')}: {(selectedModel.maxOutput / 1000).toFixed(1)}K ·{' '}
-                  {t('settings.priceLabel')}: {selectedModel.pricing}
+                  {t('settings.contextLabel')}: {(activeModelMeta.contextWindow / 1000).toFixed(0)}K ·{' '}
+                  {t('settings.maxOutputLabel')}: {(activeModelMeta.maxOutput / 1000).toFixed(1)}K ·{' '}
+                  {t('settings.priceLabel')}: {activeModelMeta.pricing}
                 </div>
               )}
+              <div>
+                <div className="muted small" style={{ marginBottom: 4 }}>{t('settings.customModelHint')}</div>
+                <input
+                  type="text"
+                  value={customModelInput}
+                  onChange={(e) => editCustomModel(e.target.value)}
+                  onBlur={() => { void handleCustomModelBlur(); }}
+                  placeholder={t('settings.customModelLabel')}
+                  style={{ minWidth: 280, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                />
+              </div>
             </div>
           </div>
         </section>
@@ -363,7 +490,45 @@ function LlmSection() {
                 onBlur={() => { void handleOllamaInputBlur(); }}
                 placeholder={t('settings.modelOllamaPlaceholder')}
                 style={{ minWidth: 280 }}
+                list="ollama-model-list"
               />
+              <datalist id="ollama-model-list">
+                {fetchedIds.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* custom-openai 没有内置模型目录 — 提供自由输入 + 已拉取 id 补全。
+          保存走 setModel('custom-openai', id) → customOpenAI.model,聊天请求同源。 */}
+      {selectedProviderId === 'custom-openai' && (
+        <section style={{ marginBottom: 24 }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>{t('settings.model')}</h3>
+          <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+            {t('settings.customModelFetchHint')}
+          </p>
+          <div className="setting-row" style={{ borderBottom: 'none' }}>
+            <div>
+              <div className="lbl">{t('settings.customModelLabel')}</div>
+            </div>
+            <div className="ctl">
+              <input
+                type="text"
+                value={customModelInput}
+                onChange={(e) => editCustomModel(e.target.value)}
+                onBlur={() => { void handleCustomModelBlur(); }}
+                placeholder={t('settings.customModelPlaceholder')}
+                style={{ minWidth: 280 }}
+                list="custom-openai-model-list"
+              />
+              <datalist id="custom-openai-model-list">
+                {fetchedIds.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
             </div>
           </div>
         </section>
@@ -438,20 +603,17 @@ function LlmSection() {
                   )}
                 </div>
               </div>
-              <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="password"
+              <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 340 }}>
+                <KeyInput
                   value={apiKeyInput}
-                  onChange={(e) => {
-                    setApiKeyInput(e.target.value);
-                    setSaved(false);
-                  }}
+                  onChange={(v) => { setApiKeyInput(v); setSaved(false); }}
                   placeholder={
                     provider?.tokenPlan
                       ? t('settings.paygApiKeyPlaceholder')
                       : t('settings.apiKeyPlaceholder')
                   }
-                  style={{ minWidth: 260 }}
+                  inputStyle={{ minWidth: 0, flex: 1 }}
+                  containerStyle={{ flex: 1 }}
                 />
                 <button
                   type="button"
@@ -488,16 +650,13 @@ function LlmSection() {
                       </div>
                     )}
                 </div>
-                <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <input
-                    type="password"
+                <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 340 }}>
+                  <KeyInput
                     value={planKeyInput}
-                    onChange={(e) => {
-                      setPlanKeyInput(e.target.value);
-                      setSaved(false);
-                    }}
+                    onChange={(v) => { setPlanKeyInput(v); setSaved(false); }}
                     placeholder={t('settings.planApiKeyPlaceholder')}
-                    style={{ minWidth: 260 }}
+                    inputStyle={{ minWidth: 0, flex: 1 }}
+                    containerStyle={{ flex: 1 }}
                   />
                   <button
                     type="button"
@@ -517,59 +676,89 @@ function LlmSection() {
                 <span className="chip good">{t('settings.saved')}</span>
               </div>
             )}
+            {saveError && <div role="alert">{saveError}</div>}
 
-            {/* Advanced — base URL override.
-                Folded by default; auto-expands if a value is already set so
-                returning users see their override immediately. */}
-            <div style={{ marginTop: 16 }}>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setAdvancedOpen((v) => !v)}
-                style={{ fontSize: 12 }}
-              >
-                {advancedOpen ? '▾' : '▸'} {t('settings.advanced.header')}
-              </button>
-              {advancedOpen && (
-                <div className="setting-row" style={{ borderBottom: 'none', alignItems: 'flex-start', marginTop: 8 }}>
-                  <div>
-                    <div className="lbl">{t('settings.advanced.baseUrlLabel')}</div>
-                    <div className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>
-                      {t('settings.advanced.baseUrlHint')}
-                    </div>
+            {/* Connectivity probe — tiny real request through the same
+                endpoint resolution the chat path uses. Auto-runs after a
+                key save; the button re-runs it any time. */}
+            <div className="setting-row" style={{ borderBottom: 'none', alignItems: 'flex-start' }}>
+              <div>
+                <div className="lbl">{t('settings.testConnection')}</div>
+                {testResult && (
+                  <div
+                    className="small"
+                    style={{
+                      marginTop: 4,
+                      lineHeight: 1.5,
+                      color: testResult.ok ? 'var(--ok, #2e7d32)' : 'var(--danger, #c62828)',
+                      wordBreak: 'break-all'
+                    }}
+                  >
+                    {testResult.ok
+                      ? t('settings.testOk', { ms: testResult.latencyMs })
+                      : `${t('settings.testFailed')}：${testResult.error ?? ''}`}
+                    {testResult.baseUrl ? ` · ${testResult.baseUrl}` : ''}
                   </div>
-                  <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <input
-                      type="text"
-                      value={baseUrlInput}
-                      onChange={(e) => {
-                        setBaseUrlInput(e.target.value);
-                        setSaved(false);
-                      }}
-                      placeholder={t('settings.advanced.baseUrlPlaceholder')}
-                      style={{ minWidth: 320, fontFamily: 'var(--font-mono)', fontSize: 12 }}
-                    />
-                    <button
-                      type="button"
-                      className="btn primary"
-                      onClick={() => {
-                        void handleSaveBaseUrl();
-                      }}
-                    >
-                      {t('settings.save')}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => {
-                        void handleResetBaseUrl();
-                      }}
-                    >
-                      {t('settings.advanced.resetDefault')}
-                    </button>
-                  </div>
+                )}
+              </div>
+              <div className="ctl">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={testing}
+                  onClick={() => {
+                    void runTestConnection();
+                  }}
+                >
+                  {testing ? t('settings.testing') : t('settings.testConnection')}
+                </button>
+                {testing && <button type="button" className="btn" onClick={probe.cancel}>{t('settings.cancelTest')}</button>}
+              </div>
+            </div>
+
+            {/* API base URL — always visible, editable. Empty = keep the
+                default (placeholder shows it); filled = hit this URL directly
+                (apiBaseUrlOverride, highest priority in main's routing). */}
+            <div className="setting-row" style={{ borderBottom: 'none', alignItems: 'flex-start' }}>
+              <div>
+                <div className="lbl">{t('settings.baseUrlLabel')}</div>
+                <div className="muted small" style={{ marginTop: 4, lineHeight: 1.5 }}>
+                  {t('settings.baseUrlHint')}
                 </div>
-              )}
+                <div className="muted small mono" style={{ marginTop: 4, wordBreak: 'break-all' }}>
+                  {t('settings.baseUrlEffective', { url: effectiveBaseUrl() })}
+                </div>
+              </div>
+              <div className="ctl" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={baseUrlInput}
+                  onChange={(e) => {
+                    setBaseUrlInput(e.target.value);
+                    setSaved(false);
+                  }}
+                  placeholder={defaultBaseUrl()}
+                  style={{ minWidth: 320, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                />
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => {
+                    void handleSaveBaseUrl();
+                  }}
+                >
+                  {t('settings.save')}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    void handleResetBaseUrl();
+                  }}
+                >
+                  {t('settings.resetDefault')}
+                </button>
+              </div>
             </div>
           </>
         )}

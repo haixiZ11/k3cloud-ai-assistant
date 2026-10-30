@@ -222,6 +222,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (providerId === 'ollama') {
         const provider = PROVIDER_BY_ID['ollama'];
         modelId = settings.ollamaModelInput?.trim() || provider?.modelInputDefault;
+      } else if (providerId === 'custom-openai') {
+        modelId = settings.customOpenAI?.model?.trim() || undefined;
       } else {
         modelId = resolveActiveModel(providerId, settings.modelByProvider)?.id;
       }

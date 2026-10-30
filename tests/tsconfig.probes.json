@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.web.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "main/ipc-llm-model.test.ts",
+    "renderer/probe-pages.test.ts",
+    "renderer/provider-probe.test.ts",
+    "renderer/settings-store.test.ts",
+    "llm/probe-ipc.test.ts",
+    "llm/probe-timeout.test.ts",
+    "../src/renderer/types/window.d.ts"
+  ]
+}

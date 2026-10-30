@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { BrowserWindow } from 'electron';
 
 // Capture handlers registered via ipcMain.handle so we can invoke them directly
 type IpcHandler = (event: unknown, req: unknown) => Promise<unknown>;
@@ -17,9 +18,8 @@ vi.mock('../../src/main/agent/loop', () => ({
   runAgentLoop: (...args: unknown[]) => runAgentLoopMock(...args)
 }));
 
-vi.mock('../../src/main/llm/factory', () => ({
-  createLlmClient: vi.fn(() => ({ stream: vi.fn() }))
-}));
+const loadSettingsMock = vi.fn();
+vi.mock('../../src/main/settings', () => ({ loadSettings: () => loadSettingsMock() }));
 vi.mock('../../src/main/logger', () => ({
   createLogger: () => ({ error: vi.fn(), info: vi.fn(), warn: vi.fn() })
 }));
@@ -69,10 +69,13 @@ vi.mock('../../src/main/agent/prompts/skills-catalog-intro.md?raw', () => ({ def
 import { registerLlmIpc } from '../../src/main/ipc-llm';
 
 describe('ipc-llm — model 透传', () => {
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     handlerMap.clear();
     runAgentLoopMock.mockReset();
     runAgentLoopMock.mockResolvedValue([]);
+    loadSettingsMock.mockResolvedValue({ llmRawDump: false });
+    vi.unstubAllGlobals();
     registerLlmIpc(() => null);
   });
 
@@ -107,5 +110,50 @@ describe('ipc-llm — model 透传', () => {
     expect(runAgentLoopMock).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'claude', model: undefined })
     );
+  });
+
+  it.each([undefined, '', 'https://synthetic-override.test/api/v3'])(
+    'constructs and streams the custom OpenAI chat client with override %s', async (override) => {
+      loadSettingsMock.mockResolvedValue({
+        llmRawDump: false,
+        customOpenAI: { baseUrl: 'https://synthetic-gateway.test/v1', model: 'synthetic-model' },
+        apiBaseUrlOverride: { 'custom-openai': override },
+      });
+      const fetchMock = vi.fn().mockResolvedValue(new Response(
+        'data: {"choices":[{"delta":{"content":"mock reply"}}]}\n\ndata: [DONE]\n\n',
+      ));
+      vi.stubGlobal('fetch', fetchMock);
+      const events: unknown[] = [];
+      runAgentLoopMock.mockImplementationOnce(async (options) => {
+        for await (const event of options.client.stream({
+          providerId: options.providerId, apiKey: options.apiKey, model: options.model,
+          messages: options.initialMessages,
+        })) events.push(event);
+        return options.initialMessages;
+      });
+      await handlerMap.get('llm:send')!(null, {
+        providerId: 'custom-openai', apiKey: 'synthetic-key', userMessage: 'synthetic hello',
+      });
+      await vi.waitFor(() => expect(events).toContainEqual({ type: 'delta', content: 'mock reply' }));
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(`${override || 'https://synthetic-gateway.test/v1'}/chat/completions`);
+      expect(JSON.parse(init.body).model).toBe('synthetic-model');
+      expect(init.headers.Authorization).toBe('Bearer synthetic-key');
+    },
+  );
+  it.each([
+    { model: 'synthetic-model' },
+    { baseUrl: 'https://synthetic.test/v1' },
+  ])('rejects incomplete custom configuration before any chat request', async (customOpenAI) => {
+    loadSettingsMock.mockResolvedValue({ llmRawDump: false, customOpenAI });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const send = vi.fn();
+    registerLlmIpc(() => ({ webContents: { send } }) as unknown as BrowserWindow);
+    await handlerMap.get('llm:send')!(null, { providerId: 'custom-openai', userMessage: 'synthetic' });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith('llm:stream', expect.objectContaining({ type: 'error' })));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(runAgentLoopMock).not.toHaveBeenCalled();
   });
 });

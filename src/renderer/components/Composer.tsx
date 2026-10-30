@@ -22,10 +22,13 @@ export function Composer({ llmProviderId, presetText }: ComposerProps) {
   const effectiveProviderId = llmProviderId ?? settings.llmProvider ?? 'deepseek';
   const accessMode: 'payg' | 'plan' =
     settings.apiAccessMode?.[effectiveProviderId] ?? 'payg';
+  // custom-openai 的密钥存专属字段 customOpenAI.apiKey(设置页保存也走那里)。
   const apiKey =
-    accessMode === 'plan'
-      ? settings.planApiKeys?.[effectiveProviderId]
-      : settings.apiKeys?.[effectiveProviderId];
+    effectiveProviderId === 'custom-openai'
+      ? settings.customOpenAI?.apiKey
+      : accessMode === 'plan'
+        ? settings.planApiKeys?.[effectiveProviderId]
+        : settings.apiKeys?.[effectiveProviderId];
 
   // Auto-focus the textarea when streaming finishes (true → false transition).
   // Without this, the cursor stays parked wherever the user last clicked,

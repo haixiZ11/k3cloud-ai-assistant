@@ -54,4 +54,28 @@ describe('settings store — model selection', () => {
       expect.objectContaining({ ollamaModelInput: 'llama3.1:70b' })
     );
   });
+
+  it('preserves both edits when a key save overlaps a provider change', async () => {
+    let finish!: () => void;
+    saveSettingsMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const keySave = useSettingsStore.getState().setApiKey('deepseek', 'synthetic-new-key');
+    const providerSave = useSettingsStore.getState().setLlmProvider('claude');
+    await Promise.resolve();
+    finish();
+    await Promise.all([keySave, providerSave]);
+    const settings = useSettingsStore.getState().settings;
+    expect(settings.llmProvider).toBe('claude');
+    expect(settings.apiKeys?.deepseek).toBe('synthetic-new-key');
+    expect(saveSettingsMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      llmProvider: 'claude', apiKeys: { deepseek: 'synthetic-new-key' },
+    }));
+  });
+
+  it('allows another edit after a failed save without persisting the failed edit', async () => {
+    saveSettingsMock.mockRejectedValueOnce(new Error('synthetic persistence failure'));
+    await expect(useSettingsStore.getState().setApiKey('deepseek', 'unsaved-key')).rejects.toThrow();
+    await useSettingsStore.getState().setLlmProvider('claude');
+    expect(useSettingsStore.getState().settings.llmProvider).toBe('claude');
+    expect(useSettingsStore.getState().settings.apiKeys?.deepseek).not.toBe('unsaved-key');
+  });
 });

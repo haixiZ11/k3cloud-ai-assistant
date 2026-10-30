@@ -8,8 +8,21 @@ import type { MessageBlock } from './blocks';
 export type Language = 'zh-CN' | 'en-US';
 export type Theme = 'light' | 'dark' | 'system';
 
+/**
+ * 自定义 OpenAI 兼容服务 (中转站 / 自建网关 / One API 等)。
+ * 独立于 apiKeys 存储,因为它自带 baseUrl + 模型名,单靠 provider→key 的
+ * map 表达不了。
+ */
+export interface CustomOpenAISettings {
+  vendorName?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
 export interface AppSettings {
   language: Language;
+  customOpenAI?: CustomOpenAISettings;
   theme: Theme;
   llmProvider?: string;
   apiKeys?: Record<string, string>;
@@ -37,6 +50,14 @@ export interface AppSettings {
   apiBaseUrlOverride?: Record<string, string>;
   /** Ollama 自定义模型名 (用户在 Settings 输入框填的). 缺省走 PROVIDERS.find(ollama).modelInputDefault. */
   ollamaModelInput?: string;
+  /**
+   * 向导(完成或跳过)已走过一次。App 的首启检测读到它就不再把用户拉回
+   * WizardPage —— 否则"在设置里切到一个还没填 key 的厂商"会被误判成
+   * 未完成 onboarding,每次启动都被弹回向导。
+   */
+  onboardingDone?: boolean;
+  /** Legacy provider-only catalog; ignored by configuration-scoped probe caches. */
+  fetchedModelsByProvider?: Record<string, { ids: string[]; fetchedAt: number }>;
   /** User-configured knowledge sources (github / gitee / local). Defaults to empty. */
   knowledgeSources?: KnowledgeSource[];
   /** Projects configured by the user. Each owns its own ERP connection config. */
@@ -78,6 +99,34 @@ export interface LlmChatRequest {
   userMessage: string;
 }
 
+/**
+ * llmListModels / llmTestConnection 的请求载荷 — 两个"探针"调用共用。
+ * key 跟 llm:send 一样由 renderer 按 accessMode 选好桶后传入,main 不反查。
+ */
+export interface LlmProviderProbeRequest {
+  /** Ephemeral renderer request identity, scoped to its IPC sender. */
+  requestId?: string;
+  providerId: string;
+  apiKey?: string;
+  accessMode?: 'payg' | 'plan';
+  /**
+   * Endpoint captured with the key/model snapshot. The probe handlers do not
+   * re-read mutable settings while the request is in flight. If omitted by
+   * an older caller, resolve only the provider's built-in default.
+   */
+  baseUrlOverride?: string;
+  /** testConnection 必传:要打的模型 id;listModels 忽略。 */
+  model?: string;
+}
+
+export interface TestConnectionResult {
+  ok: boolean;
+  latencyMs: number;
+  /** 实际请求的 URL — UI 显示出来,配置错端点时一眼定位。 */
+  baseUrl: string;
+  error?: string;
+}
+
 export interface LlmStreamEvent {
   requestId: string;
   type:
@@ -114,6 +163,17 @@ export interface IpcApi {
   llmSendMessage: (req: LlmChatRequest) => Promise<{ requestId: string }>;
   llmAbort: (requestId: string) => Promise<void>;
   llmOnStream: (cb: (ev: LlmStreamEvent) => void) => () => void;
+  /**
+   * 拉取 provider 的模型目录(openai 兼容 /v1/models、anthropic /v1/models、
+   * ollama /api/tags)。不抛异常,失败走 `{ ok: false, error }` — 调用方静默
+   * 回退内置目录即可。
+   */
+  llmListModels: (
+    req: LlmProviderProbeRequest
+  ) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
+  /** 发一个极小真实请求验证 baseUrl + key + model 全链路连通。 */
+  llmTestConnection: (req: LlmProviderProbeRequest) => Promise<TestConnectionResult>;
+  llmCancelProbe: (requestId: string) => Promise<void>;
   conversationsList: () => Promise<Array<{ id: string; title: string; savedAt: string; messageCount: number }>>;
   conversationsLoad: (id: string) => Promise<{
     id: string;
